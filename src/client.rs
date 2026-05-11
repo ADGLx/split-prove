@@ -97,10 +97,19 @@ pub fn client_prepare(
     let mut color_fields = Vec::new();
     coin_info.type_.field_repr(&mut color_fields);
     // color is a complex type — just store the first field element bytes
-    color_bytes.copy_from_slice(&color_fields.get(0).map(|f| f.0.to_bytes_le()).unwrap_or([0u8; 32]));
+    color_bytes.copy_from_slice(
+        &color_fields
+            .get(0)
+            .map(|f| f.0.to_bytes_le())
+            .unwrap_or([0u8; 32]),
+    );
 
     ClientHandoff {
-        sk_commitment: sk_commitment.0.to_bytes_le().try_into().unwrap_or([0u8; 32]),
+        sk_commitment: sk_commitment
+            .0
+            .to_bytes_le()
+            .try_into()
+            .unwrap_or([0u8; 32]),
         nullifier: nullifier.0 .0,
         pk: pk.0 .0,
         commitment_hash: commitment_hash.0 .0,
@@ -108,7 +117,10 @@ pub fn client_prepare(
             let mut v_fields = Vec::new();
             coin_info.value.field_repr(&mut v_fields);
             // value is stored as Fr, extract u128
-            let bytes = v_fields.get(0).map(|f| f.0.to_bytes_le()).unwrap_or([0u8; 32]);
+            let bytes = v_fields
+                .get(0)
+                .map(|f| f.0.to_bytes_le())
+                .unwrap_or([0u8; 32]);
             u128::from_le_bytes(bytes[..16].try_into().unwrap_or([0u8; 16]))
         },
         coin_color: color_bytes,

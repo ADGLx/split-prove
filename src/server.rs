@@ -6,16 +6,16 @@
 use crate::client::{
     handoff_commitment, handoff_nullifier, handoff_pk, handoff_sk_commitment_fr, ClientHandoff,
 };
-use midnight_coin_structure::contract::ContractAddress;
 use midnight_base_crypto::hash::HashOutput;
+use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
+use midnight_coin_structure::contract::ContractAddress;
 use midnight_storage::db::DB;
+use midnight_storage::Storable;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::ProofPreimage;
 use midnight_zswap::{AuthorizedClaim, Input};
-use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
 use rand::rngs::OsRng;
 use std::fmt::Debug;
-use midnight_storage::Storable;
 
 /// Build a spend ProofPreimage from a ClientHandoff.
 /// The resulting ProofPreimage has sk_commitment in inputs[0] instead of raw sk.
@@ -92,15 +92,13 @@ mod tests {
     use rand::Rng;
     use std::borrow::Cow;
 
-    fn setup_tree(
-        sk: &CoinSecretKey,
-        coin: &QualifiedCoinInfo,
-    ) -> MerkleTree<(), InMemoryDB> {
+    fn setup_tree(sk: &CoinSecretKey, coin: &QualifiedCoinInfo) -> MerkleTree<(), InMemoryDB> {
         let sender_evidence = SenderEvidence::User(Cow::Borrowed(sk));
         let coin_info = CoinInfo::from(coin);
         let commitment = coin_info.commitment(&Recipient::from(sender_evidence));
         MerkleTree::<(), InMemoryDB>::blank(32)
-            .update_hash(0, commitment.0, ())
+            .try_update_hash(0, commitment.0, ())
+            .expect("valid tree index")
             .rehash()
     }
 
@@ -117,7 +115,11 @@ mod tests {
         let handoff = client_prepare(&sk, &coin, None);
 
         let input = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree);
-        assert!(input.is_ok(), "build_spend_preimage failed: {:?}", input.err());
+        assert!(
+            input.is_ok(),
+            "build_spend_preimage failed: {:?}",
+            input.err()
+        );
 
         let input = input.unwrap();
         // inputs[0] should be sk_commitment, not raw sk
@@ -125,7 +127,10 @@ mod tests {
         assert_eq!(input.proof.inputs[0], sk_com_fr);
 
         // key_location should be spend-split
-        assert_eq!(input.proof.key_location.0.as_ref(), "midnight/zswap/spend-split");
+        assert_eq!(
+            input.proof.key_location.0.as_ref(),
+            "midnight/zswap/spend-split"
+        );
     }
 
     #[test]
@@ -140,10 +145,14 @@ mod tests {
         let handoff = client_prepare(&sk, &coin, None);
 
         let claim = build_sign_preimage(&handoff);
-        assert!(claim.is_ok(), "build_sign_preimage failed: {:?}", claim.err());
+        assert!(
+            claim.is_ok(),
+            "build_sign_preimage failed: {:?}",
+            claim.err()
+        );
 
         let claim = claim.unwrap();
-        assert_eq!(claim.proof.inputs[0], handoff_sk_commitment_fr(&handoff));
+        assert_eq!(claim.proof.inputs[2], handoff_sk_commitment_fr(&handoff));
     }
 
     #[test]

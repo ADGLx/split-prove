@@ -15,7 +15,7 @@ use midnight_coin_structure::coin::{
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::hash::{transient_commit, transient_hash};
+use midnight_transient_crypto::hash::transient_hash;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::ProofPreimage;
 use midnight_transient_crypto::repr::FieldRepr;
@@ -147,7 +147,8 @@ fn main() {
     let coin_info = CoinInfo::from(&coin);
     let commitment = coin_info.commitment(&Recipient::from(sender_evidence));
     let tree = MerkleTree::<(), InMemoryDB>::blank(32)
-        .update_hash(0, commitment.0, ())
+        .try_update_hash(0, commitment.0, ())
+        .expect("valid tree index")
         .rehash();
 
     println!("Setup:");
@@ -177,13 +178,16 @@ fn main() {
     // ── SERVER: build ProofPreimage WITHOUT sk ──
     println!("\n--- SERVER (prover) ---");
     let start = Instant::now();
-    let spend_input = server_build_spend_preimage::<InMemoryDB>(&handoff, &tree)
-        .expect("spend preimage");
+    let spend_input =
+        server_build_spend_preimage::<InMemoryDB>(&handoff, &tree).expect("spend preimage");
     let server_build_time = start.elapsed();
     println!("  Build time:      {:?}", server_build_time);
     println!("  key_location:    {}", spend_input.proof.key_location.0);
     println!("  inputs count:    {}", spend_input.proof.inputs.len());
-    println!("  pub_tx_inputs:   {}", spend_input.proof.public_transcript_inputs.len());
+    println!(
+        "  pub_tx_inputs:   {}",
+        spend_input.proof.public_transcript_inputs.len()
+    );
 
     // Verify that the proof preimage's inputs[0] is sk_commitment, NOT raw sk
     assert_eq!(
@@ -223,7 +227,8 @@ fn main() {
     // SenderEvidence::User serializes as [discriminant=1, sk_field_0, sk_field_1, ...]
     // So inputs[0] = 1 (discriminant), inputs[1] = first sk field
     assert_eq!(
-        original_input.proof.inputs[0], Fr::from(1u64),
+        original_input.proof.inputs[0],
+        Fr::from(1u64),
         "original inputs[0] should be User discriminant (1)"
     );
     assert_eq!(
@@ -235,8 +240,14 @@ fn main() {
 
     // ── Summary ──
     println!("\n=== Results ===");
-    println!("  Client computation: {:?} (nullifier + pk + commitment)", client_time);
-    println!("  Server build:       {:?} (ProofPreimage without sk)", server_build_time);
+    println!(
+        "  Client computation: {:?} (nullifier + pk + commitment)",
+        client_time
+    );
+    println!(
+        "  Server build:       {:?} (ProofPreimage without sk)",
+        server_build_time
+    );
     println!("  Server would then:  prove() → 2-10s (PLONK, no sk needed)");
     println!("\n  SECURITY:");
     println!("    Original: server sees sk in inputs[0] ✗");

@@ -1,0 +1,164 @@
+# Split-Prove PoC Runbook
+
+This PoC tests one boundary:
+
+```text
+wallet/client keeps the zswap secret key
+proof server builds and proves a split spend without seeing that key
+```
+
+The wallet already knows how to derive keys, sync/index chain data, decrypt owned shielded outputs, filter spent outputs, and maintain the zswap Merkle state. The new wallet-side work for split proving is the **handoff**: compute the split-prove request fields and send them to the proof server.
+
+## Current Flow
+
+```text
+wallet/client
+  existing wallet work:
+    derive zswap key
+    fetch preview/indexer data
+    decrypt owned shielded outputs
+    filter spent outputs
+    build Merkle state/path
+
+  split-prove handoff:
+    compute skCommitment
+    compute nullifier
+    compute commitmentHash
+    package coin metadata + Merkle state/path
+    POST /v2/prove-split-spend
+
+proof server
+  reconstruct QualifiedCoinInfo
+  load Merkle tree/path
+  call Input::new_split
+  prove midnight/zswap/spend-split
+  return proofHex
+
+preview chain
+  currently read-only through the indexer
+```
+
+The PoC does not submit a transaction to preview yet.
+
+## Important Files
+
+- `deps/midnight-ledger/proof-server/src/endpoints.rs`: `POST /v2/prove-split-spend`.
+- `deps/midnight-ledger/proof-server/src/preview_client.rs`: local CLI helper that simulates wallet-side preview work and handoff creation.
+- `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs`: runnable preview e2e command.
+- `deps/midnight-ledger/zswap/src/construct.rs`: `new_split` constructors.
+- `deps/midnight-ledger/zswap/src/prove.rs`: split circuit key resolution.
+- `deps/midnight-ledger/zswap/static/*split*`: local split proving artifacts.
+- `tools/derive_midnight_zswap_seed.mjs`: temporary phrase-to-zswap-seed helper for the PoC.
+
+## Environment
+
+Create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Set either a recovery phrase or a direct zswap seed:
+
+```dotenv
+MIDNIGHT_PREVIEW_INDEXER_WS=wss://indexer.preview.midnight.network/api/v4/graphql/ws
+MIDNIGHT_PREVIEW_NODE_WS=wss://rpc.preview.midnight.network
+
+MIDNIGHT_PREVIEW_RECOVERY_PHRASE="word1 word2 ... word24"
+MIDNIGHT_PREVIEW_ACCOUNT=0
+MIDNIGHT_PREVIEW_ZSWAP_KEY_SCAN_LIMIT=1
+MIDNIGHT_PREVIEW_ZSWAP_EVENT_LIMIT=50000
+
+MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
+```
+
+`.env` is gitignored. Do not commit it.
+
+## Run The Preview PoC
+
+Install dependencies once:
+
+```bash
+npm install
+```
+
+Run the e2e command:
+
+```bash
+cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml
+```
+
+Expected output:
+
+```text
+proved preview output key_index=0 mt_index=1622 value=500 token=<token-type> status=proofBuilt proof_len=<bytes>
+```
+
+By default the command starts a local proof server on a random port. To use an already running proof server:
+
+```bash
+cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --proof-server-url http://127.0.0.1:6300
+```
+
+## Endpoint
+
+```text
+POST /v2/prove-split-spend
+```
+
+Request shape:
+
+```json
+{
+  "skCommitment": "<32-byte field hex>",
+  "nullifier": "<32-byte hex>",
+  "commitmentHash": "<32-byte hex>",
+  "coinValue": 500,
+  "coinType": "<32-byte token type hex>",
+  "coinNonce": "<32-byte hex>",
+  "mtIndex": 1622,
+  "contractAddress": null,
+  "zswapState": "<serialized zswap state hex>",
+  "prove": true
+}
+```
+
+Response shape:
+
+```json
+{
+  "status": "proofBuilt",
+  "keyLocation": "midnight/zswap/spend-split",
+  "merklePathSource": "zswapState",
+  "proofHex": "<serialized proof hex>",
+  "proofError": null
+}
+```
+
+## What Is Still Missing
+
+- Move the PoC preview client logic into the real wallet/client integration point.
+- Replace full `zswapState` handoff with the smallest acceptable Merkle witness if that is the desired production API.
+- Assemble a full transaction from the returned proof.
+- Submit the transaction to `wss://rpc.preview.midnight.network`.
+- Harden the endpoint and request validation for production.
+
+## Quick Checks
+
+Compile the CLI:
+
+```bash
+cargo check --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml
+```
+
+Run the ignored e2e test:
+
+```bash
+cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --ignored --nocapture
+```

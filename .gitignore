@@ -1,6 +1,10 @@
 target/
+node_modules/
 circuit-output/
 deps/midnight-ledger-old/
 *.bzkir
 *.prover
 *.verifier
+.env
+.env.*
+!.env.example
