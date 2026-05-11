@@ -5,6 +5,7 @@
     "derive:zswap-seed": "node tools/derive_midnight_zswap_seed.mjs"
   },
   "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^0.16.0",
     "@midnight-ntwrk/wallet-sdk-hd": "3.0.2",
     "@scure/bip39": "2.0.1"
   }

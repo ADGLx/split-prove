@@ -21,6 +21,7 @@ wallet/client
     build Merkle state/path
 
   split-prove handoff:
+    prove sk -> skCommitment/nullifier/commitmentHash/pk
     compute skCommitment
     compute nullifier
     compute commitmentHash
@@ -30,6 +31,7 @@ wallet/client
 proof server
   reconstruct QualifiedCoinInfo
   load Merkle tree/path
+  reject handoffs whose commitment does not reproduce the tree root
   call Input::new_split
   prove midnight/zswap/spend-split
   return proofHex
@@ -115,6 +117,7 @@ Request shape:
 {
   "skCommitment": "<32-byte field hex>",
   "nullifier": "<32-byte hex>",
+  "pk": "<32-byte public key hex>",
   "commitmentHash": "<32-byte hex>",
   "coinValue": 500,
   "coinType": "<32-byte token type hex>",
@@ -122,6 +125,7 @@ Request shape:
   "mtIndex": 1622,
   "contractAddress": null,
   "zswapState": "<serialized zswap state hex>",
+  "clientDerivationProof": "<serialized client derivation proof hex>",
   "prove": true
 }
 ```
@@ -137,6 +141,8 @@ Response shape:
   "proofError": null
 }
 ```
+
+When `"prove": true`, the endpoint requires `zswapState` or `zswapStateFile`. The older simulated single-leaf fallback is still useful for preimage-shape debugging with `"prove": false`, but it is intentionally rejected for proof-building requests.
 
 ## What Is Still Missing
 
@@ -155,10 +161,21 @@ cargo check --offline -p midnight-proof-server --bin preview-split-prove \
   --manifest-path deps/midnight-ledger/Cargo.toml
 ```
 
-Run the ignored e2e test:
+Run the synthetic e2e test. This generates a client derivation proof, posts it over the
+HTTP endpoint, verifies it on the server, and builds the split spend proof:
 
 ```bash
+cargo test --offline -p midnight-proof-server synthetic_client_derivation_proof_is_verified_before_split_proving \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --nocapture
+```
+
+Run the live preview-wallet e2e test. This is opt-in because it uses wallet
+secrets from `.env`, the hosted preview indexer websocket, and a local proof server:
+
+```bash
+MIDNIGHT_RUN_PREVIEW_E2E=1 \
 cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
   --manifest-path deps/midnight-ledger/Cargo.toml \
-  -- --ignored --nocapture
+  -- --nocapture
 ```

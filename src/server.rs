@@ -8,6 +8,7 @@ use crate::client::{
 };
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
+use midnight_coin_structure::coin::ShieldedTokenType;
 use midnight_coin_structure::contract::ContractAddress;
 use midnight_storage::db::DB;
 use midnight_storage::Storable;
@@ -70,7 +71,7 @@ fn reconstruct_coin(handoff: &ClientHandoff) -> Result<QualifiedCoinInfo, String
 
     Ok(QualifiedCoinInfo {
         value: handoff.coin_value.into(),
-        type_: Default::default(),
+        type_: ShieldedTokenType(HashOutput(handoff.coin_color)),
         nonce,
         mt_index: handoff.mt_index,
     })
@@ -83,6 +84,7 @@ mod tests {
     use midnight_base_crypto::hash::HashOutput;
     use midnight_coin_structure::coin::{
         Info as CoinInfo, QualifiedInfo as QualifiedCoinInfo, SecretKey as CoinSecretKey,
+        ShieldedTokenType,
     };
     use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
     use midnight_storage::db::InMemoryDB;
@@ -130,6 +132,48 @@ mod tests {
         assert_eq!(
             input.proof.key_location.0.as_ref(),
             "midnight/zswap/spend-split"
+        );
+    }
+
+    #[test]
+    fn reconstruct_coin_preserves_token_type() {
+        let token = ShieldedTokenType(HashOutput([7u8; 32]));
+        let handoff = ClientHandoff {
+            sk_commitment: [1u8; 32],
+            nullifier: [2u8; 32],
+            pk: [3u8; 32],
+            commitment_hash: [4u8; 32],
+            coin_value: 123,
+            coin_color: token.0 .0,
+            coin_nonce: [5u8; 32],
+            mt_index: 9,
+            contract_address: None,
+            client_derivation_proof: None,
+        };
+
+        let coin = reconstruct_coin(&handoff).unwrap();
+        assert_eq!(coin.type_, token);
+        assert_eq!(coin.mt_index, 9);
+    }
+
+    #[test]
+    fn build_spend_preimage_rejects_tampered_commitment() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 1000u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let tree = setup_tree(&sk, &coin);
+        let mut handoff = client_prepare(&sk, &coin, None);
+        handoff.commitment_hash[0] ^= 1;
+
+        let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
+            .expect_err("tampered commitment must not build a split preimage");
+        assert!(
+            err.contains("CommitmentNotInTree"),
+            "unexpected error: {err}"
         );
     }
 

@@ -20,16 +20,31 @@ struct PublicKeyPreimage {
   secretKey: ZswapCoinSecretKey,
 }
 
-// Public outputs: pk, coinCom, nullifier
+struct SecretCommitmentPreimage {
+  secretKey: ZswapCoinSecretKey,
+  blinding: Field,
+}
+
+// Public outputs: skCommitment, pk, coinCom, nullifier
 // The server uses these as inputs to spend_no_sk
+ledger skCommitment: Field;
 ledger publicKey: ZswapCoinPublicKey;
 ledger coinCommitment: Bytes<32>;
 ledger nullifier: Bytes<32>;
 
 export circuit sk_prove(
   sk: ZswapCoinSecretKey,
+  skBlinding: Field,
   coin: ShieldedCoinInfo
 ): [] {
+  // Commit to sk without revealing it.
+  const skCom = transientHash<SecretCommitmentPreimage>(
+    SecretCommitmentPreimage {
+      secretKey: sk,
+      blinding: skBlinding,
+    });
+  skCommitment = disclose(skCom);
+
   // Derive public key from secret key
   const pk = ZswapCoinPublicKey {
     bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {

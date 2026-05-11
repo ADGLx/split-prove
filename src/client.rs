@@ -11,8 +11,18 @@ use midnight_coin_structure::coin::{
 };
 use midnight_coin_structure::contract::ContractAddress;
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
+use midnight_onchain_runtime::ops::Op;
+use midnight_onchain_runtime::program_fragments::Cell_write;
+use midnight_onchain_runtime::result_mode::ResultModeVerify;
+use midnight_onchain_runtime::state::StateValue;
+use midnight_storage::arena::Sp;
+use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
 use midnight_transient_crypto::hash::transient_hash;
+use midnight_transient_crypto::proofs::{
+    KeyLocation, ParamsProver, ParamsProverProvider, Proof, ProofPreimage, ProvingKeyMaterial,
+    Resolver,
+};
 use midnight_transient_crypto::repr::FieldRepr;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -49,6 +59,46 @@ pub struct ClientHandoff {
 
     /// Whether this is a contract-owned coin (Some(address)) or user-owned (None)
     pub contract_address: Option<[u8; 32]>,
+
+    /// Serialized proof that binds sk to sk_commitment, pk, commitment_hash, and nullifier.
+    #[serde(default)]
+    pub client_derivation_proof: Option<String>,
+}
+
+pub const CLIENT_DERIVATION_KEY_LOCATION: &str = "split/client/sk-derivation";
+
+pub struct ClientDerivationResolver<P> {
+    pub params_and_fallback: P,
+}
+
+impl<P> ClientDerivationResolver<P> {
+    pub fn new(params_and_fallback: P) -> Self {
+        Self {
+            params_and_fallback,
+        }
+    }
+}
+
+impl<P> Resolver for ClientDerivationResolver<P>
+where
+    P: Resolver + Sync,
+{
+    async fn resolve_key(&self, key: KeyLocation) -> std::io::Result<Option<ProvingKeyMaterial>> {
+        if key.0.as_ref() == CLIENT_DERIVATION_KEY_LOCATION {
+            Ok(Some(client_derivation_proving_data()))
+        } else {
+            self.params_and_fallback.resolve_key(key).await
+        }
+    }
+}
+
+impl<P> ParamsProverProvider for ClientDerivationResolver<P>
+where
+    P: ParamsProverProvider + Sync,
+{
+    async fn get_params(&self, k: u8) -> std::io::Result<ParamsProver> {
+        self.params_and_fallback.get_params(k).await
+    }
 }
 
 /// Prepare a client handoff for a shielded coin spend.
@@ -64,6 +114,15 @@ pub fn client_prepare(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
     contract: Option<ContractAddress>,
+) -> ClientHandoff {
+    client_prepare_with_blinding(sk, coin, contract, OsRng.r#gen())
+}
+
+pub fn client_prepare_with_blinding(
+    sk: &CoinSecretKey,
+    coin: &QualifiedCoinInfo,
+    contract: Option<ContractAddress>,
+    blinding: Fr,
 ) -> ClientHandoff {
     let sender_evidence = if let Some(addr) = contract {
         SenderEvidence::Contract(addr)
@@ -81,28 +140,16 @@ pub fn client_prepare(
     // Compute coin commitment
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
 
-    // Commit to sk (hiding commitment)
-    let blinding: Fr = OsRng.r#gen();
-    let mut sk_fields = Vec::new();
-    sk.field_repr(&mut sk_fields);
-    let sk_commitment = transient_hash(&[sk_fields[0], blinding]);
+    // Commit to sk with the same field-aligned representation used by Compact.
+    let sk_commitment = compact_sk_commitment(sk, blinding);
 
     // Serialize coin nonce
     let mut nonce_bytes = [0u8; 32];
     let nonce_fr_bytes = coin_info.nonce.0 .0;
     nonce_bytes.copy_from_slice(&nonce_fr_bytes);
 
-    // Serialize coin color
-    let mut color_bytes = [0u8; 32];
-    let mut color_fields = Vec::new();
-    coin_info.type_.field_repr(&mut color_fields);
-    // color is a complex type — just store the first field element bytes
-    color_bytes.copy_from_slice(
-        &color_fields
-            .get(0)
-            .map(|f| f.0.to_bytes_le())
-            .unwrap_or([0u8; 32]),
-    );
+    // Serialize the token type as its canonical 32-byte hash.
+    let color_bytes = coin_info.type_.0 .0;
 
     ClientHandoff {
         sk_commitment: sk_commitment
@@ -127,6 +174,121 @@ pub fn client_prepare(
         coin_nonce: nonce_bytes,
         mt_index: coin.mt_index,
         contract_address: contract.map(|a| a.0 .0),
+        client_derivation_proof: None,
+    }
+}
+
+pub fn compact_sk_commitment(sk: &CoinSecretKey, blinding: Fr) -> Fr {
+    let mut sk_fields = Vec::new();
+    sk.0 .0.field_repr(&mut sk_fields);
+    transient_hash(&[sk_fields[0], sk_fields[1], blinding])
+}
+
+pub fn build_client_derivation_preimage(
+    sk: &CoinSecretKey,
+    sk_blinding: Fr,
+    _coin: &QualifiedCoinInfo,
+    handoff: &ClientHandoff,
+) -> ProofPreimage {
+    let mut inputs = Vec::new();
+    sk.0 .0.field_repr(&mut inputs);
+    inputs.push(sk_blinding);
+    handoff.coin_nonce.field_repr(&mut inputs);
+    handoff.coin_color.field_repr(&mut inputs);
+    inputs.push(Fr::from(handoff.coin_value));
+
+    ProofPreimage {
+        inputs,
+        private_transcript: Vec::new(),
+        public_transcript_inputs: client_derivation_public_transcript_inputs(handoff),
+        public_transcript_outputs: Vec::new(),
+        binding_input: 0.into(),
+        communications_commitment: None,
+        key_location: KeyLocation(Cow::Borrowed(CLIENT_DERIVATION_KEY_LOCATION)),
+    }
+}
+
+pub async fn client_prove_derivation(
+    preimage: &ProofPreimage,
+    resolver: impl ParamsProverProvider + Resolver,
+) -> Result<Proof, midnight_transient_crypto::proofs::ProvingError> {
+    let (proof, _) = preimage
+        .prove::<midnight_zkir::IrSource>(OsRng, &resolver, &resolver)
+        .await?;
+    Ok(proof)
+}
+
+pub fn client_derivation_proving_data() -> ProvingKeyMaterial {
+    ProvingKeyMaterial {
+        prover_key: include_bytes!("../circuits/static/client-derivation/sk_prove.prover").to_vec(),
+        verifier_key: include_bytes!("../circuits/static/client-derivation/sk_prove.verifier")
+            .to_vec(),
+        ir_source: include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir").to_vec(),
+    }
+}
+
+pub fn client_derivation_public_transcript_inputs(handoff: &ClientHandoff) -> Vec<Fr> {
+    client_derivation_public_transcript_inputs_from_parts(
+        handoff_sk_commitment_fr(handoff),
+        handoff_pk(handoff),
+        handoff.commitment_hash,
+        handoff.nullifier,
+    )
+}
+
+pub fn client_derivation_public_transcript_inputs_from_parts(
+    sk_commitment: Fr,
+    pk: CoinPublicKey,
+    commitment_hash: [u8; 32],
+    nullifier: [u8; 32],
+) -> Vec<Fr> {
+    let mut inputs = Vec::new();
+    extend_ops(
+        &mut inputs,
+        Cell_write!(
+            [midnight_onchain_runtime::ops::Key::Value(0u8.into())],
+            false,
+            Fr,
+            sk_commitment
+        ),
+    );
+    extend_ops(
+        &mut inputs,
+        Cell_write!(
+            [midnight_onchain_runtime::ops::Key::Value(1u8.into())],
+            false,
+            CoinPublicKey,
+            pk
+        ),
+    );
+    extend_ops(
+        &mut inputs,
+        Cell_write!(
+            [midnight_onchain_runtime::ops::Key::Value(2u8.into())],
+            false,
+            [u8; 32],
+            commitment_hash
+        ),
+    );
+    extend_ops(
+        &mut inputs,
+        Cell_write!(
+            [midnight_onchain_runtime::ops::Key::Value(3u8.into())],
+            false,
+            [u8; 32],
+            nullifier
+        ),
+    );
+    inputs
+}
+
+fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, InMemoryDB>; N]) {
+    for op in ops.into_iter().filter(|op| match op {
+        Op::Idx { path, .. } => !path.is_empty(),
+        Op::Ins { n, .. } => *n != 0,
+        _ => true,
+    }) {
+        op.field_repr(inputs);
     }
 }
 
@@ -153,6 +315,8 @@ pub fn handoff_commitment(handoff: &ClientHandoff) -> Commitment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use midnight_transient_crypto::proofs::Zkir;
+    use std::io::Cursor;
 
     #[test]
     fn client_prepare_produces_valid_handoff() {
@@ -199,6 +363,64 @@ mod tests {
         assert_eq!(handoff.pk, deserialized.pk);
         assert_eq!(handoff.sk_commitment, deserialized.sk_commitment);
         assert_eq!(handoff.mt_index, deserialized.mt_index);
+    }
+
+    #[test]
+    fn client_prepare_preserves_token_type_bytes() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 500u64.into(),
+            type_: midnight_coin_structure::coin::ShieldedTokenType(HashOutput([9u8; 32])),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+
+        let handoff = client_prepare(&sk, &coin, None);
+
+        assert_eq!(handoff.coin_color, coin.type_.0 .0);
+    }
+
+    #[test]
+    fn client_derivation_preimage_checks_against_compact_ir() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let blinding = OsRng.r#gen();
+        let coin = QualifiedCoinInfo {
+            value: 500u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
+        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
+        let ir = midnight_zkir::IrSource::load_ir_from_tagged(Cursor::new(include_bytes!(
+            "../circuits/static/client-derivation/sk_prove.bzkir"
+        )))
+        .expect("client derivation IR should load");
+
+        preimage
+            .check(&ir)
+            .expect("honest handoff should match client derivation circuit");
+    }
+
+    #[test]
+    fn client_derivation_preimage_rejects_tampered_nullifier() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let blinding = OsRng.r#gen();
+        let coin = QualifiedCoinInfo {
+            value: 500u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
+        handoff.nullifier[0] ^= 1;
+        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
+        let ir = midnight_zkir::IrSource::load_ir_from_tagged(Cursor::new(include_bytes!(
+            "../circuits/static/client-derivation/sk_prove.bzkir"
+        )))
+        .expect("client derivation IR should load");
+
+        assert!(preimage.check(&ir).is_err());
     }
 
     #[test]

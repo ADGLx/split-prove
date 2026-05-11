@@ -22,6 +22,7 @@ wallet/client
     maintain Merkle state/path
 
   split-prove handoff:
+    prove sk -> skCommitment/nullifier/commitmentHash/pk
     compute skCommitment
     compute nullifier
     compute commitmentHash
@@ -31,6 +32,7 @@ wallet/client
 proof server
   reconstruct QualifiedCoinInfo
   load Merkle tree/path
+  reject handoffs whose commitment does not reproduce the tree root
   call Input::new_split
   prove midnight/zswap/spend-split
   return proofHex
@@ -53,9 +55,11 @@ Merkle state/path available
 derive handoff:
   nullifier = H(sk, coin)                    receives:
   commitmentHash = commit(pk, coin)            skCommitment
-  skCommitment = H(sk, blinding)               nullifier
-  coin metadata                                commitmentHash
-  Merkle witness/state                         coin metadata
+  skCommitment = H(sk, blinding)               clientDerivationProof
+  coin metadata                                nullifier
+  Merkle witness/state                         pk
+                                                commitmentHash
+                                                coin metadata
                                                 Merkle witness/state
 
 POST /v2/prove-split-spend  ───────────────▶  Input::new_split(...)
@@ -87,6 +91,9 @@ POST /v2/prove-split-spend
 
 - Local split circuit/proving artifacts under `deps/midnight-ledger/zswap/static`.
 - Preview-chain PoC CLI that derives a wallet zswap key, finds an unspent owned shielded output, builds the split handoff, calls the proof server, and receives a real proof.
+- Runtime hardening checks that reject split spends when the supplied commitment does not match the Merkle root/path, and require real `zswapState`/`zswapStateFile` for proof-building requests instead of the simulated single-leaf fallback.
+- Client derivation circuit compiled with `compact compile +0.31.0 --no-communications-commitment`, with proving artifacts under `circuits/static/client-derivation`.
+- Proof-server verification of `clientDerivationProof` before building a real split spend proof.
 
 ## Important Files
 
@@ -157,12 +164,30 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
   -- --proof-server-url http://127.0.0.1:6300
 ```
 
+Run the synthetic HTTP e2e test:
+
+```bash
+cargo test --offline -p midnight-proof-server synthetic_client_derivation_proof_is_verified_before_split_proving \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --nocapture
+```
+
+Run the live preview-wallet e2e test:
+
+```bash
+MIDNIGHT_RUN_PREVIEW_E2E=1 \
+cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --nocapture
+```
+
 ## Endpoint Shape
 
 ```json
 {
   "skCommitment": "<32-byte field hex>",
   "nullifier": "<32-byte hex>",
+  "pk": "<32-byte public key hex>",
   "commitmentHash": "<32-byte hex>",
   "coinValue": 500,
   "coinType": "<32-byte token type hex>",
@@ -170,6 +195,7 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
   "mtIndex": 1622,
   "contractAddress": null,
   "zswapState": "<serialized zswap state hex>",
+  "clientDerivationProof": "<serialized client derivation proof hex>",
   "prove": true
 }
 ```
@@ -196,11 +222,12 @@ Successful response:
 | Proof server does heavy work only | The server builds the split proof preimage, resolves proving data, and generates the proof. |
 | Wallet remains responsible for wallet state | Key derivation, output decryption, spent filtering, and Merkle tracking remain wallet/client responsibilities. |
 
-Important caveat for the PoC: the server endpoint currently receives precomputed handoff values. Before treating this as production-safe, the split circuit and verifier path need careful review to ensure those values are constrained exactly as intended against the committed secret.
+Important caveat for the PoC: the server now verifies a client-side derivation proof before proof-building requests, and validates that the supplied commitment sits at the claimed Merkle position. The remaining production question is how to bind or aggregate that client proof into the final ledger-verified artifact instead of treating it as a proof-server admission check.
 
 ## Remaining Work
 
 - Move the PoC preview client logic into the real wallet/client integration point.
+- Bind the server spend proof to the verified client-proof public outputs, or aggregate/recursively verify the client proof.
 - Decide whether the server API should accept full `zswapState` or a smaller Merkle witness.
 - Assemble a full transaction from the returned proof.
 - Submit that transaction to preview via `wss://rpc.preview.midnight.network`.

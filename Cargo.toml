@@ -18,6 +18,7 @@ midnight-zswap = { path = "deps/midnight-ledger/zswap", package = "midnight-zswa
 midnight-ledger = { path = "deps/midnight-ledger/ledger", package = "midnight-ledger", default-features = false, features = ["proving"] }
 midnight-zkir = { path = "deps/midnight-ledger/zkir", package = "midnight-zkir" }
 midnight-base-crypto = { path = "deps/midnight-ledger/base-crypto", package = "midnight-base-crypto" }
+midnight-onchain-runtime = { path = "deps/midnight-ledger/onchain-runtime", package = "midnight-onchain-runtime" }
 midnight-serialize = { path = "deps/midnight-ledger/serialize", package = "midnight-serialize" }
 midnight-storage = { path = "deps/midnight-ledger/storage", package = "midnight-storage", default-features = false }
 rand = "0.8"
