@@ -1,0 +1,4 @@
+[submodule "deps/midnight-ledger"]
+	path = deps/midnight-ledger
+	url = git@github.com:webisoftSoftware/midnight-ledger.git
+	branch = feature/split-prove-no-sk

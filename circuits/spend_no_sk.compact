@@ -1,0 +1,35 @@
+// Server-side circuit: proves merkle membership + value commitment
+// WITHOUT the secret key. Takes (coinCom, nullifier) as public inputs
+// that were pre-verified via sk_prove.
+//
+// The server never sees sk. It only knows (coinCom, nullifier) are
+// correct because it verified the client's sk_prove proof.
+
+import CompactStandardLibrary;
+
+ledger merkleTree: HistoricMerkleTree<32, Bytes<32>>;
+ledger nullifiers: Set<Bytes<32>>;
+ledger valueCom: JubjubPoint;
+ledger contractAddr: ContractAddress;
+ledger segment: Uint<16>;
+
+export circuit spend_no_sk(
+  coinCom: Bytes<32>,
+  nul: Bytes<32>,
+  path: MerkleTreePath<32, Bytes<32>>,
+  coin: ShieldedCoinInfo,
+  rc: Field
+): [] {
+  // Verify the coin commitment is in the merkle tree
+  merkleTree.checkRoot(disclose(merkleTreePathRootNoLeafHash<32>(path)));
+  assert(coinCom == path.leaf, "Path must be to coin commitment");
+
+  // Insert nullifier (prevents double-spend)
+  nullifiers.insert(disclose(nul));
+
+  // Compute and disclose value commitment (Pedersen)
+  const colorBase = hashToCurve<[Bytes<32>, Uint<16>]>([coin.color, segment]);
+  const pedersenBlinding = ecMulGenerator(rc);
+  const pedersenCommit = ecMul(colorBase, coin.value);
+  valueCom = disclose(ecAdd(pedersenBlinding, pedersenCommit));
+}

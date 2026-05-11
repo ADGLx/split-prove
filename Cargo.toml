@@ -1,0 +1,28 @@
+[package]
+name = "split-prove-prototype"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "split_prove"
+path = "src/lib.rs"
+
+[[bin]]
+name = "split-prove-demo"
+path = "src/main.rs"
+
+[dependencies]
+midnight-transient-crypto = { path = "deps/midnight-ledger/transient-crypto", package = "midnight-transient-crypto" }
+midnight-coin-structure = { path = "deps/midnight-ledger/coin-structure", package = "midnight-coin-structure" }
+midnight-zswap = { path = "deps/midnight-ledger/zswap", package = "midnight-zswap" }
+midnight-ledger = { path = "deps/midnight-ledger/ledger", package = "midnight-ledger", default-features = false, features = ["proving"] }
+midnight-zkir = { path = "deps/midnight-ledger/zkir", package = "midnight-zkir" }
+midnight-base-crypto = { path = "deps/midnight-ledger/base-crypto", package = "midnight-base-crypto" }
+midnight-serialize = { path = "deps/midnight-ledger/serialize", package = "midnight-serialize" }
+midnight-storage = { path = "deps/midnight-ledger/storage", package = "midnight-storage", default-features = false }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+hex = "0.4"

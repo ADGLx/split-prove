@@ -1,0 +1,6 @@
+target/
+circuit-output/
+deps/midnight-ledger-old/
+*.bzkir
+*.prover
+*.verifier

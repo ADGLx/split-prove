@@ -1,0 +1,61 @@
+// Client-side circuit: proves sk → (pk, coinCom, nullifier)
+// Tiny circuit (~2 hashes). Client proves locally in ~100ms.
+// Server verifies off-chain to confirm the derived values are correct.
+
+import CompactStandardLibrary;
+
+struct ZswapCoinSecretKey {
+  bytes: Bytes<32>;
+}
+
+struct CoinPreimage {
+  sep: Bytes<21>,
+  info: ShieldedCoinInfo,
+  dataType: Boolean,
+  data: Bytes<32>,
+}
+
+struct PublicKeyPreimage {
+  sep: Bytes<21>,
+  secretKey: ZswapCoinSecretKey,
+}
+
+// Public outputs: pk, coinCom, nullifier
+// The server uses these as inputs to spend_no_sk
+ledger publicKey: ZswapCoinPublicKey;
+ledger coinCommitment: Bytes<32>;
+ledger nullifier: Bytes<32>;
+
+export circuit sk_prove(
+  sk: ZswapCoinSecretKey,
+  coin: ShieldedCoinInfo
+): [] {
+  // Derive public key from secret key
+  const pk = ZswapCoinPublicKey {
+    bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
+      sep: "midnight:zswap-pk[v1]",
+      secretKey: sk,
+    })
+  };
+  publicKey = disclose(pk);
+
+  // Compute coin commitment (user-owned: dataType=true, data=pk)
+  const coinCom = persistentHash<CoinPreimage>(
+    CoinPreimage {
+      sep: "midnight:zswap-cc[v1]",
+      info: coin,
+      dataType: true,
+      data: pk.bytes,
+    });
+  coinCommitment = disclose(coinCom);
+
+  // Compute nullifier (user-owned: dataType=true, data=sk)
+  const nul = persistentHash<CoinPreimage>(
+    CoinPreimage {
+      sep: "midnight:zswap-cn[v1]",
+      info: coin,
+      dataType: true,
+      data: sk.bytes,
+    });
+  nullifier = disclose(nul);
+}

@@ -1,0 +1,29 @@
+FROM rust:1.93-slim AS builder
+
+RUN apt-get update && \
+    apt-get install -y git pkg-config libssl-dev clang cmake curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build zkir binary from midnight-ledger
+COPY deps/midnight-ledger /src/midnight-ledger
+WORKDIR /src/midnight-ledger
+RUN cargo build --release -p midnight-zkir --features binary 2>&1 | tail -10
+RUN ls -la target/release/zkir && echo "zkir binary built OK"
+
+# Final image — use same base as builder to match glibc
+FROM rust:1.93-slim
+
+RUN apt-get update && apt-get install -y jq && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/midnight-ledger/target/release/zkir /usr/local/bin/zkir
+
+WORKDIR /work
+COPY deps/midnight-ledger/zswap/zswap-split.compact /work/zswap-split.compact
+COPY deps/midnight-ledger/ledger/dust-split.compact /work/dust-split.compact
+COPY deps/midnight-ledger/zswap/zswap.compact /work/zswap.compact
+COPY deps/midnight-ledger/ledger/dust.compact /work/dust.compact
+COPY deps/midnight-ledger/zkir-precompiles/ /work/zkir-precompiles/
+COPY build-circuits.sh /work/build-circuits.sh
+RUN chmod +x /work/build-circuits.sh
+
+CMD ["/work/build-circuits.sh"]
