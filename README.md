@@ -1,135 +1,207 @@
 # Split-Prove Prototype
 
-Separates ZK proving so the **client keeps the secret key** and the **server does the heavy proving**.
+This repo is a proof of concept for Midnight zswap split proving:
+
+```text
+wallet/client keeps the zswap secret key
+proof server does the heavy proof generation
+proof server never receives the raw secret key
+```
+
+The current PoC can prove a real unspent shielded output from the Midnight preview chain. It does not submit a transaction yet.
+
+## Current Flow
+
+```text
+wallet/client
+  existing wallet work:
+    derive zswap keys
+    sync/index chain data
+    decrypt owned shielded outputs
+    filter spent outputs
+    maintain Merkle state/path
+
+  split-prove handoff:
+    compute skCommitment
+    compute nullifier
+    compute commitmentHash
+    package coin metadata + Merkle state/path
+    POST /v2/prove-split-spend
+
+proof server
+  reconstruct QualifiedCoinInfo
+  load Merkle tree/path
+  call Input::new_split
+  prove midnight/zswap/spend-split
+  return proofHex
+
+preview chain
+  read-only through the indexer for this PoC
+```
+
+The only wallet work that is new for split proving is the handoff construction. Key derivation, chain sync, owned-output decryption, spent filtering, and Merkle tracking are normal wallet responsibilities.
 
 ## Architecture
 
-```
-CLIENT (wallet, ~100µs)              SERVER (prover, ~2-10s)
-─────────────────────────            ──────────────────────────
-sk (secret key)                      Never sees sk
-  ↓
-nullifier = H(sk, coin)              Receives: {sk_commitment,
-pk = H(sk)                             nullifier, pk, coin_info,
-commitment = commit(pk, coin)           merkle_path}
-sk_commitment = H(sk, random)            ↓
-  ↓                                  Builds ProofPreimage with
-POST /v2/prove {handoff}  ────────→    sk_commitment in inputs[0]
-                                         ↓
-                          ←────────  prove() → Proof
-```
+```text
+CLIENT / WALLET                              PROOF SERVER
+───────────────────────────────              ───────────────────────────────
+sk stays local                               never receives raw sk
+owned shielded coin selected
+Merkle state/path available
 
-## Files
+derive handoff:
+  nullifier = H(sk, coin)                    receives:
+  commitmentHash = commit(pk, coin)            skCommitment
+  skCommitment = H(sk, blinding)               nullifier
+  coin metadata                                commitmentHash
+  Merkle witness/state                         coin metadata
+                                                Merkle witness/state
 
-```
-proto/split-prove/
-├── README.md                        # This file
-├── Cargo.toml                       # Uses local midnight-ledger paths
-├── src/main.rs                      # End-to-end demo
-└── deps/midnight-ledger/            # Forked midnight-ledger
-    ├── zswap/
-    │   ├── zswap.compact            # Original circuits (untouched)
-    │   ├── zswap-split.compact      # NEW: split-prove circuits
-    │   └── src/construct.rs         # NEW: new_split() constructors
-    └── ledger/
-        ├── dust.compact             # Original circuits (untouched)
-        └── dust-split.compact       # NEW: split-prove dust circuit
+POST /v2/prove-split-spend  ───────────────▶  Input::new_split(...)
+                                                ↓
+                                              prove spend-split
+
+proofHex                    ◀───────────────  serialized proof
 ```
 
-## What Changed
+The root prototype also has a smaller local demo of the same boundary:
 
-### Compact circuits (`*-split.compact`)
-
-The ONLY change is the `committed` keyword on `sk` parameters:
-
-```diff
-- export circuit spend(sk: Either<ZswapCoinSecretKey, ContractAddress>, ...)
-+ export circuit spend_split(sk: committed Either<ZswapCoinSecretKey, ContractAddress>, ...)
-
-- export circuit sign(secretKey: ZswapCoinSecretKey)
-+ export circuit sign_split(secretKey: committed ZswapCoinSecretKey)
-
-- export circuit spend(dust: DustOutput, sk: DustSecretKey, ...)
-+ export circuit spend_split(dust: DustOutput, sk: committed DustSecretKey, ...)
+```text
+src/client.rs  -> computes ClientHandoff
+src/server.rs  -> builds split ProofPreimage
 ```
 
-All constraint logic is **identical** — the circuit still computes `nullifier = H(sk, coin)`
-and `pk = H(sk)` internally. The `committed` keyword just changes how `sk` enters the
-circuit: via a committed-instance column instead of a regular witness column.
+## What Is Implemented
 
-### Rust constructors (`construct.rs`)
+- Root Rust prototype for client/server split proving.
+- Modified Midnight proof server endpoint:
 
-Added `new_split()` alongside existing constructors (non-breaking):
-- `AuthorizedClaim::new_split()` — sign circuit
-- `Input::new_split()` — spend circuit
+```text
+POST /v2/prove-split-spend
+```
 
-These accept pre-computed `(nullifier, pk, commitment_hash, sk_commitment)` instead of raw `sk`.
+- Split zswap constructors:
+  - `Input::new_split`
+  - `AuthorizedClaim::new_split`
 
-## Compilation Steps
+- Local split circuit/proving artifacts under `deps/midnight-ledger/zswap/static`.
+- Preview-chain PoC CLI that derives a wallet zswap key, finds an unspent owned shielded output, builds the split handoff, calls the proof server, and receives a real proof.
 
-### 1. Compile the split circuits
+## Important Files
+
+- `POC_RUNBOOK.md`: concise setup and run instructions.
+- `src/client.rs`: root prototype handoff logic.
+- `src/server.rs`: root prototype preimage builders.
+- `tools/derive_midnight_zswap_seed.mjs`: temporary preview wallet seed helper.
+- `.env.example`: preview environment template.
+- `deps/midnight-ledger/proof-server/src/endpoints.rs`: real proof-server endpoint.
+- `deps/midnight-ledger/proof-server/src/preview_client.rs`: preview CLI helper split into wallet scan, handoff build, and proof-server POST.
+- `deps/midnight-ledger/zswap/src/construct.rs`: split constructors.
+- `deps/midnight-ledger/zswap/src/prove.rs`: split proving artifact resolution.
+
+## Setup
+
+Install Node dependencies for the temporary wallet seed helper:
 
 ```bash
-# From the midnight-ledger directory
-compactc zswap/zswap-split.compact --output zswap/static/spend-split
-compactc zswap/zswap-split.compact --output zswap/static/sign-split
-compactc ledger/dust-split.compact --output ledger/static/dust/spend-split
+npm install
 ```
 
-This produces: `spend-split.bzkir`, `sign-split.bzkir`, `spend-split.bzkir` (dust)
-
-### 2. Generate proving/verifying keys
+Create local env:
 
 ```bash
-# Using the key generation example from midnight-zk-stdlib
-cargo run --example keygen -- \
-  --circuit zswap/static/spend-split.bzkir \
-  --params params/bls_filecoin_2p15 \
-  --output zswap/static/spend-split
-
-# Repeat for sign-split and dust/spend-split
+cp .env.example .env
 ```
 
-This produces: `.prover`, `.verifier` files for each circuit.
+Set either:
 
-### 3. Deploy keys to server
+```dotenv
+MIDNIGHT_PREVIEW_RECOVERY_PHRASE="word1 word2 ... word24"
+```
 
-Copy the `.bzkir`, `.prover`, `.verifier` files to the server's key directories
-alongside the existing circuit keys.
+or:
 
-### 4. Add /v2/prove endpoint
+```dotenv
+MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=<32-byte-hex-seed>
+```
 
-In `rust-wrapper/src/lib.rs`, add a new route that:
-1. Deserializes `ClientHandoff` from the request body
-2. Calls `Input::new_split()` / `AuthorizedClaim::new_split()` to build the ProofPreimage
-3. Resolves the `spend-split` / `sign-split` circuit keys
-4. Runs `prove_native()` → returns proof
+`.env` is gitignored.
 
-### 5. Client SDK
+## Run
 
-Add `client_prepare(sk, coin)` function (~20 lines) that computes:
-- nullifier, pk, commitment, sk_commitment
-- Serializes into `ClientHandoff`
-- POSTs to `/v2/prove`
+Run the root toy demo:
+
+```bash
+cargo run --offline --bin split-prove-demo
+```
+
+Run the preview-chain e2e PoC:
+
+```bash
+cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml
+```
+
+Expected output:
+
+```text
+proved preview output key_index=0 mt_index=1622 value=500 token=<token-type> status=proofBuilt proof_len=<bytes>
+```
+
+To call an already running proof server:
+
+```bash
+cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --proof-server-url http://127.0.0.1:6300
+```
+
+## Endpoint Shape
+
+```json
+{
+  "skCommitment": "<32-byte field hex>",
+  "nullifier": "<32-byte hex>",
+  "commitmentHash": "<32-byte hex>",
+  "coinValue": 500,
+  "coinType": "<32-byte token type hex>",
+  "coinNonce": "<32-byte hex>",
+  "mtIndex": 1622,
+  "contractAddress": null,
+  "zswapState": "<serialized zswap state hex>",
+  "prove": true
+}
+```
+
+Successful response:
+
+```json
+{
+  "status": "proofBuilt",
+  "keyLocation": "midnight/zswap/spend-split",
+  "merklePathSource": "zswapState",
+  "proofHex": "<serialized proof hex>",
+  "proofError": null
+}
+```
 
 ## Security Properties
 
-| Property | Guarantee |
+| Property | Principle |
 |---|---|
-| sk hidden from server | ✓ Server sees `sk_commitment = H(sk, r)`, not `sk` |
-| Commitment binding | ✓ Client can't change sk after committing |
-| Proof validity | ✓ Circuit still verifies nullifier/pk derived from real sk |
-| No circuit weakening | ✓ Same constraints as original — only input method changes |
+| Secret key stays client-side | The raw zswap coin secret key is used by the wallet/client and is not sent to the proof server. |
+| Server receives a handoff, not custody | The server receives derived proof inputs such as `skCommitment`, `nullifier`, `commitmentHash`, coin metadata, and Merkle data. |
+| Split proof uses dedicated circuits/artifacts | The proof is built for `midnight/zswap/spend-split`, not the original raw-secret-key spend path. |
+| Proof server does heavy work only | The server builds the split proof preimage, resolves proving data, and generates the proof. |
+| Wallet remains responsible for wallet state | Key derivation, output decryption, spent filtering, and Merkle tracking remain wallet/client responsibilities. |
 
-## Running the Prototype
+Important caveat for the PoC: the server endpoint currently receives precomputed handoff values. Before treating this as production-safe, the split circuit and verifier path need careful review to ensure those values are constrained exactly as intended against the committed secret.
 
-```bash
-# Build and run
-cd proto/split-prove
-cargo run
+## Remaining Work
 
-# Output shows:
-# - Client computation: ~100µs
-# - Server build: ~1ms
-# - inputs[0] = sk_commitment (not raw sk) ✓
-```
+- Move the PoC preview client logic into the real wallet/client integration point.
+- Decide whether the server API should accept full `zswapState` or a smaller Merkle witness.
+- Assemble a full transaction from the returned proof.
+- Submit that transaction to preview via `wss://rpc.preview.midnight.network`.
+- Harden request validation and proof-server operational behavior.
