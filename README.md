@@ -8,7 +8,7 @@ proof server does the heavy proof generation
 proof server never receives the raw secret key
 ```
 
-The current PoC can prove a real unspent shielded output from the Midnight preview chain. It does not submit a transaction yet.
+The current PoC can prove a real unspent shielded output from the Midnight preview chain, assemble a sealed transaction, and optionally submit that transaction to the preview chain.
 
 ## Current Flow
 
@@ -35,10 +35,11 @@ proof server
   reject handoffs whose commitment does not reproduce the tree root
   call Input::new_split
   prove midnight/zswap/spend-split
-  return proofHex
+  return proofHex + provedInputHex
 
 preview chain
-  read-only through the indexer for this PoC
+  indexer read for wallet state
+  optional Dust balancing and submission through the wallet SDK
 ```
 
 The only wallet work that is new for split proving is the handoff construction. Key derivation, chain sync, owned-output decryption, spent filtering, and Merkle tracking are normal wallet responsibilities.
@@ -90,7 +91,7 @@ POST /v2/prove-split-spend
   - `AuthorizedClaim::new_split`
 
 - Local split circuit/proving artifacts under `deps/midnight-ledger/zswap/static`.
-- Preview-chain PoC CLI that derives a wallet zswap key, finds an unspent owned shielded output, builds the split handoff, calls the proof server, and receives a real proof.
+- Preview-chain PoC CLI that derives wallet keys, finds an unspent owned shielded output, builds the split handoff, calls the proof server, receives a real proof, assembles the split transaction, and can hand it to the wallet SDK for Dust balancing and submission.
 - Runtime hardening checks that reject split spends when the supplied commitment does not match the Merkle root/path, and require real `zswapState`/`zswapStateFile` for proof-building requests instead of the simulated single-leaf fallback.
 - Client derivation circuit compiled with `compact compile +0.31.0 --no-communications-commitment`, with proving artifacts under `circuits/static/client-derivation`.
 - Proof-server verification of `clientDerivationProof` before building a real split spend proof.
@@ -101,6 +102,7 @@ POST /v2/prove-split-spend
 - `src/client.rs`: root prototype handoff logic.
 - `src/server.rs`: root prototype preimage builders.
 - `tools/derive_midnight_zswap_seed.mjs`: temporary preview wallet seed helper.
+- `tools/preview_balance_submit_split_tx.mjs`: wallet SDK bridge for Dust balancing and preview submission.
 - `.env.example`: preview environment template.
 - `deps/midnight-ledger/proof-server/src/endpoints.rs`: real proof-server endpoint.
 - `deps/midnight-ledger/proof-server/src/preview_client.rs`: preview CLI helper split into wallet scan, handoff build, and proof-server POST.
@@ -153,7 +155,7 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
 Expected output:
 
 ```text
-proved preview output key_index=0 mt_index=1622 value=500 token=<token-type> status=proofBuilt proof_len=<bytes>
+proved preview output key_index=0 mt_index=1622 value=500 token=<token-type> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_len=<hex chars> submitted=false
 ```
 
 To call an already running proof server:
@@ -163,6 +165,34 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --proof-server-url http://127.0.0.1:6300
 ```
+
+Submit the assembled transaction to the actual preview chain through the wallet SDK:
+
+```bash
+MIDNIGHT_PREVIEW_SUBMIT_TX=true \
+cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+  --manifest-path deps/midnight-ledger/Cargo.toml
+```
+
+The full e2e submit path is: local client derivation proof, server split proof,
+local split transaction assembly, wallet SDK Dust fee balancing, then raw RPC
+submission of the finalized transaction. It requires `MIDNIGHT_PREVIEW_RECOVERY_PHRASE`; direct
+`MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX` is still supported for prove-only runs.
+
+`MIDNIGHT_PREVIEW_SUBMIT_MODE=raw-rpc` is the default when
+`MIDNIGHT_PREVIEW_SUBMIT_TX=true`; it still uses the wallet SDK to sync Dust,
+add fee-balancing `DustActions`, and finalize the transaction before wrapping it
+as a node extrinsic. Use `MIDNIGHT_PREVIEW_SUBMIT_MODE=wallet` to submit through
+the wallet SDK watcher instead.
+The helper uses local wallet SDK packages when installed, or
+`../one-am-wallet/node_modules`; override with `MIDNIGHT_PREVIEW_WALLET_NODE_MODULES`.
+First-time Dust proving may need to download and verify Dust proving assets; the
+helper retries `finalizeRecipe` twice by default. Tune with
+`MIDNIGHT_PREVIEW_DUST_PROVE_ATTEMPTS` and
+`MIDNIGHT_PREVIEW_DUST_PROVE_RETRY_DELAY_MS`.
+
+This spends the selected preview-chain shielded output and creates a replacement
+output back to the same wallet key.
 
 Run the synthetic HTTP e2e test:
 
@@ -176,6 +206,15 @@ Run the live preview-wallet e2e test:
 
 ```bash
 MIDNIGHT_RUN_PREVIEW_E2E=1 \
+cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  -- --nocapture
+```
+
+Run the live submit-to-preview-chain e2e:
+
+```bash
+MIDNIGHT_RUN_PREVIEW_E2E=1 MIDNIGHT_PREVIEW_SUBMIT_TX=true \
 cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --nocapture
@@ -207,7 +246,9 @@ Successful response:
   "status": "proofBuilt",
   "keyLocation": "midnight/zswap/spend-split",
   "merklePathSource": "zswapState",
+  "inputPreimageHex": "<serialized Input<ProofPreimage> hex>",
   "proofHex": "<serialized proof hex>",
+  "provedInputHex": "<serialized Input<Proof> hex>",
   "proofError": null
 }
 ```
@@ -229,6 +270,5 @@ Important caveat for the PoC: the server now verifies a client-side derivation p
 - Move the PoC preview client logic into the real wallet/client integration point.
 - Bind the server spend proof to the verified client-proof public outputs, or aggregate/recursively verify the client proof.
 - Decide whether the server API should accept full `zswapState` or a smaller Merkle witness.
-- Assemble a full transaction from the returned proof.
-- Submit that transaction to preview via `wss://rpc.preview.midnight.network`.
+- Move the wallet SDK Dust balancing bridge into the real wallet/client integration point.
 - Harden request validation and proof-server operational behavior.
