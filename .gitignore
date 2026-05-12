@@ -1,5 +1,9 @@
 target/
 node_modules/
+deps/midnight-local-dev/node_modules/
+deps/midnight-local-dev/logs/
+deps/midnight-local-dev/.env
+deps/midnight-local-dev/accounts.json
 circuit-output/
 deps/midnight-ledger-old/
 *.bzkir

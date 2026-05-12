@@ -85,6 +85,29 @@ MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
 only enough for prove-only mode; wallet submit mode requires the recovery phrase
 so the helper can derive the matching Dust and unshielded keys.
 
+## Run The Local Chain
+
+The standalone Midnight local-dev network is vendored into this repo under
+`deps/midnight-local-dev`. It stays as its own npm package.
+
+```bash
+cd deps/midnight-local-dev
+npm install
+MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> npm start
+```
+
+If the proof-server image also needs to come from this PoC, provide both image
+overrides:
+
+```bash
+MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> \
+MIDNIGHT_PROOF_SERVER_IMAGE=<split-proof-server-image> \
+npm start
+```
+
+The local chain uses `network_id=undeployed` and exposes `9944`, `8088`, and
+`6300` on localhost.
+
 ## Run The Preview PoC
 
 Install dependencies once:

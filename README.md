@@ -137,6 +137,30 @@ MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=<32-byte-hex-seed>
 
 `.env` is gitignored.
 
+## Local Chain
+
+The standalone Midnight local-dev network is vendored as a self-contained npm
+package under `deps/midnight-local-dev`. Install and run it from that directory:
+
+```bash
+cd deps/midnight-local-dev
+npm install
+MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> npm start
+```
+
+When testing with a rebuilt split-proof proof-server image as well, pass both
+image overrides:
+
+```bash
+MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> \
+MIDNIGHT_PROOF_SERVER_IMAGE=<split-proof-server-image> \
+npm start
+```
+
+The local network exposes the node, indexer, and proof server at the usual
+undeployed endpoints: `127.0.0.1:9944`, `127.0.0.1:8088`, and
+`127.0.0.1:6300`.
+
 ## Run
 
 Run the root toy demo:
