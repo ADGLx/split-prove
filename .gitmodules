@@ -1,6 +1,6 @@
 [submodule "deps/midnight-ledger"]
 	path = deps/midnight-ledger
-	url = git@github.com:webisoftSoftware/midnight-ledger.git
+	url = https://github.com/webisoftSoftware/midnight-ledger.git
 	branch = feature/split-prove-ledger-8.0.2
 [submodule "deps/midnight-node"]
 	path = deps/midnight-node
