@@ -109,13 +109,18 @@ async function importPackage(name, fallbackPath) {
   try {
     return await import(name);
   } catch (directError) {
-    const fallbackUrl = new URL(fallbackPath, siblingWalletNodeModulesUrl());
-    if (!existsSync(fallbackUrl)) {
-      throw new Error(
-        `unable to import ${name}; install it locally or set MIDNIGHT_PREVIEW_WALLET_NODE_MODULES to a wallet node_modules directory. Original error: ${directError.message}`,
-      );
+    for (const root of [
+      new URL('../deps/midnight-local-dev/node_modules/', import.meta.url).href,
+      siblingWalletNodeModulesUrl(),
+    ]) {
+      const fallbackUrl = new URL(fallbackPath, root);
+      if (existsSync(fallbackUrl)) {
+        return await import(fallbackUrl.href);
+      }
     }
-    return await import(fallbackUrl.href);
+    throw new Error(
+      `unable to import ${name}; install it locally or set MIDNIGHT_PREVIEW_WALLET_NODE_MODULES to a wallet node_modules directory. Original error: ${directError.message}`,
+    );
   }
 }
 
@@ -134,6 +139,37 @@ function collectIdentifiers(tx) {
   } catch {
     return [];
   }
+}
+
+function validateFinalizedTransaction(ledger, tx, networkId) {
+  const strictness = new ledger.WellFormedStrictness();
+  strictness.enforceBalancing = true;
+  strictness.verifyNativeProofs = true;
+  strictness.verifyContractProofs = true;
+  strictness.enforceLimits = true;
+  strictness.verifySignatures = true;
+  const state = ledger.LedgerState.blank(networkId);
+  try {
+    tx.wellFormed(state, strictness, new Date());
+  } catch (error) {
+    const message = errorDetails(error);
+    if (/coin commitments|merkle|coin_coms|first_free|state[_ ]?root/i.test(message)) {
+      strictness.enforceBalancing = true;
+      strictness.verifyNativeProofs = true;
+      strictness.verifyContractProofs = true;
+      strictness.enforceLimits = true;
+      strictness.verifySignatures = true;
+      debug(`wellFormed needed chain state (${message}); cannot verify Merkle inclusion against blank state`);
+      throw new Error(`wellFormed requires live chain state: ${message}`);
+    }
+    throw error;
+  }
+}
+
+function shouldValidateLedgerWasm() {
+  return ['1', 'true', 'yes'].includes(
+    envValue('MIDNIGHT_PREVIEW_VALIDATE_LEDGER_WASM', '').trim().toLowerCase(),
+  );
 }
 
 function txHash(tx) {
@@ -232,7 +268,7 @@ function deriveKeys({ HDWallet, Roles, validateMnemonic, ledger, createKeystore,
   };
 }
 
-function createNetworkConfiguration({ InMemoryTransactionHistoryStorage, WalletEntrySchema, mergeWalletEntries }) {
+function createNetworkConfiguration({ InMemoryTransactionHistoryStorage }) {
   const indexerHttpUrl = envValue('MIDNIGHT_PREVIEW_INDEXER_HTTP', DEFAULT_PREVIEW.indexerHttpUrl);
   const indexerWsUrl = envValue('MIDNIGHT_PREVIEW_INDEXER_WS', DEFAULT_PREVIEW.indexerWsUrl);
   return {
@@ -247,7 +283,7 @@ function createNetworkConfiguration({ InMemoryTransactionHistoryStorage, WalletE
       indexerHttpUrl,
       indexerWsUrl,
     },
-    txHistoryStorage: new InMemoryTransactionHistoryStorage(WalletEntrySchema, mergeWalletEntries),
+    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
   };
 }
 
@@ -264,7 +300,7 @@ async function withTimeout(promise, ms, label) {
 }
 
 function submitMode() {
-  return envValue('MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE', 'sdk').toLowerCase();
+  return envValue('MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE', 'raw-rpc').toLowerCase();
 }
 
 function assertNodeUrlAllowed(nodeUrl) {
@@ -275,21 +311,73 @@ function assertNodeUrlAllowed(nodeUrl) {
   }
 }
 
+function rawRpcWaitFor() {
+  const raw = envValue('MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR', 'inBlock').trim().toLowerCase();
+  if (raw === 'submitted' || raw === 'submit') return 'submitted';
+  if (raw === 'inblock' || raw === 'in_block' || raw === 'in-block') return 'inBlock';
+  if (raw === 'finalized' || raw === 'finalised') return 'finalized';
+  throw new Error(`unsupported MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR=${raw}; expected submitted, inBlock, or finalized`);
+}
+
+function extractInclusion(status) {
+  if (status && typeof status === 'object') {
+    if (typeof status.inBlock === 'string') return { status: 'inBlock', blockHash: status.inBlock };
+    if (typeof status.finalized === 'string') return { status: 'finalized', blockHash: status.finalized };
+    const terminalKeys = ['invalid', 'dropped', 'usurped', 'finalityTimeout', 'finalitytimeout', 'retracted'];
+    for (const key of terminalKeys) {
+      if (key in status) return { status: key, blockHash: typeof status[key] === 'string' ? status[key] : '', failure: true };
+    }
+  } else if (typeof status === 'string') {
+    const lowered = status.toLowerCase();
+    if (lowered === 'ready' || lowered === 'future' || lowered === 'broadcast') {
+      return { status: lowered, blockHash: '' };
+    }
+  }
+  return null;
+}
+
 async function submitFinalizedTxToNode(txHex) {
   const nodeUrl = envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_PREVIEW.nodeUrl);
   assertNodeUrlAllowed(nodeUrl);
   const extrinsicHex = wrapAsMidnightExtrinsic(fromHex(txHex));
-  const timeoutMs = Number.parseInt(envValue('MIDNIGHT_PREVIEW_RAW_RPC_SUBMIT_TIMEOUT_SECS', '60'), 10) * 1000;
-  const boundedTimeoutMs = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000;
+  const timeoutMs = Number.parseInt(envValue('MIDNIGHT_PREVIEW_RAW_RPC_SUBMIT_TIMEOUT_SECS', '120'), 10) * 1000;
+  const boundedTimeoutMs = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120_000;
+  const waitFor = rawRpcWaitFor();
 
   return await withTimeout(new Promise((resolve, reject) => {
     const ws = new WebSocket(nodeUrl);
+    let txHashFromNode = '';
+    let subscriptionId = '';
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws.close();
+      } catch {
+        // already closed
+      }
+      resolve(result);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws.close();
+      } catch {
+        // already closed
+      }
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
     ws.onopen = () => {
-      debug(`raw RPC submit opened ${nodeUrl}; extrinsic_hex_len=${extrinsicHex.length - 2}`);
+      debug(`raw RPC submit opened ${nodeUrl}; extrinsic_hex_len=${extrinsicHex.length - 2}; wait_for=${waitFor}`);
+      const method = waitFor === 'submitted' ? 'author_submitExtrinsic' : 'author_submitAndWatchExtrinsic';
       ws.send(JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
-        method: 'author_submitExtrinsic',
+        method,
         params: [extrinsicHex],
       }));
     };
@@ -302,30 +390,54 @@ async function submitFinalizedTxToNode(txHex) {
         if (data.error) {
           const message = typeof data.error.message === 'string' ? data.error.message : 'RPC error';
           const detail = typeof data.error.data === 'string' ? data.error.data : '';
-          reject(new Error(detail ? `${message}: ${detail}` : message));
-        } else {
-          debug(`raw RPC submit accepted result=${normalizeIdentifier(data.result)}`);
-          resolve(normalizeIdentifier(data.result));
+          fail(new Error(detail ? `${message}: ${detail}` : message));
+          return;
+        }
+        if (data.id === 1 && data.result !== undefined) {
+          if (waitFor === 'submitted') {
+            const txId = normalizeIdentifier(data.result);
+            debug(`raw RPC submit accepted result=${txId}`);
+            finish({ txId, blockHash: '', inclusionStatus: 'submitted' });
+            return;
+          }
+          subscriptionId = String(data.result);
+          debug(`raw RPC subscription opened id=${subscriptionId}`);
+          return;
+        }
+        if (data.method === 'author_extrinsicUpdate' && data.params) {
+          const status = data.params.result;
+          debug(`raw RPC subscription update: ${JSON.stringify(status)}`);
+          const inclusion = extractInclusion(status);
+          if (!inclusion) return;
+          if (inclusion.failure) {
+            fail(new Error(`transaction rejected by node: ${inclusion.status}${inclusion.blockHash ? ` (${inclusion.blockHash})` : ''}`));
+            return;
+          }
+          txHashFromNode = txHashFromNode || inclusion.blockHash;
+          if (
+            (waitFor === 'inBlock' && (inclusion.status === 'inBlock' || inclusion.status === 'finalized')) ||
+            (waitFor === 'finalized' && inclusion.status === 'finalized')
+          ) {
+            finish({
+              txId: subscriptionId,
+              blockHash: inclusion.blockHash,
+              inclusionStatus: inclusion.status,
+            });
+          }
         }
       } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-      } finally {
-        try {
-          ws.close();
-        } catch {
-          // already closed
-        }
+        fail(error);
       }
     };
     ws.onerror = (event) => {
-      reject(new Error(event?.message || 'websocket error'));
-      try {
-        ws.close();
-      } catch {
-        // already closed
+      fail(new Error(event?.message || 'websocket error'));
+    };
+    ws.onclose = () => {
+      if (!settled) {
+        fail(new Error('node websocket closed before inclusion'));
       }
     };
-  }), boundedTimeoutMs, 'raw RPC transaction submit');
+  }), boundedTimeoutMs, `raw RPC transaction submit (wait_for=${waitFor})`);
 }
 
 async function submitWithWalletSdk(wallet, tx) {
@@ -344,6 +456,7 @@ async function main() {
   const args = parseArgs(process.argv);
   const ledger = await importPackage('@midnight-ntwrk/ledger-v8', '@midnight-ntwrk/ledger-v8/midnight_ledger_wasm_fs.js');
   const tx = ledger.Transaction.deserialize('signature', 'proof', 'binding', fromHex(args.txHex));
+  const networkId = envValue('MIDNIGHT_PREVIEW_NETWORK_ID', 'preview');
 
   if (args.dryRun) {
     process.stdout.write(`${JSON.stringify({
@@ -361,14 +474,12 @@ async function main() {
     shieldedWallet,
     unshieldedWallet,
     dustWallet,
-    abstractions,
   ] = await Promise.all([
     importPackage('@midnight-ntwrk/wallet-sdk-facade', '@midnight-ntwrk/wallet-sdk-facade/dist/index.js'),
     importPackage('@midnight-ntwrk/wallet-sdk-hd', '@midnight-ntwrk/wallet-sdk-hd/dist/index.js'),
     importPackage('@midnight-ntwrk/wallet-sdk-shielded', '@midnight-ntwrk/wallet-sdk-shielded/dist/index.js'),
     importPackage('@midnight-ntwrk/wallet-sdk-unshielded-wallet', '@midnight-ntwrk/wallet-sdk-unshielded-wallet/dist/index.js'),
     importPackage('@midnight-ntwrk/wallet-sdk-dust-wallet', '@midnight-ntwrk/wallet-sdk-dust-wallet/dist/index.js'),
-    importPackage('@midnight-ntwrk/wallet-sdk-abstractions', '@midnight-ntwrk/wallet-sdk-abstractions/dist/index.js'),
   ]);
 
   const { zswapSecretKeys, dustSecretKey, unshieldedKeystore, publicKey } = deriveKeys({
@@ -379,9 +490,7 @@ async function main() {
   }, args.keyIndex);
 
   const configuration = createNetworkConfiguration({
-    InMemoryTransactionHistoryStorage: abstractions.InMemoryTransactionHistoryStorage,
-    WalletEntrySchema: facade.WalletEntrySchema,
-    mergeWalletEntries: facade.mergeWalletEntries,
+    InMemoryTransactionHistoryStorage: unshieldedWallet.InMemoryTransactionHistoryStorage,
   });
   if (args.proofServerUrl) {
     configuration.provingServerUrl = new URL(args.proofServerUrl);
@@ -422,12 +531,28 @@ async function main() {
   const balancedBytes = balanced.serialize();
   const balancedTxHex = bytesToHex(balancedBytes);
   debug(`balanced transaction finalized; tx_hash=${txHash(balanced)} tx_hex_len=${balancedTxHex.length}`);
+  let wellFormedStatus = 'skipped';
+  let wellFormedDiagnostic = null;
+  if (shouldValidateLedgerWasm()) {
+    try {
+      validateFinalizedTransaction(ledger, balanced, configuration.networkId);
+      wellFormedStatus = 'ok';
+    } catch (error) {
+      wellFormedStatus = 'failed';
+      wellFormedDiagnostic = errorDetails(error);
+      throw new Error(`pre-submit wellFormed validation failed: ${wellFormedDiagnostic}`);
+    }
+  }
   const result = {
     balancedTxHex,
     txHash: txHash(balanced),
     txIdentifiers: collectIdentifiers(balanced),
+    wellFormed: wellFormedStatus,
+    wellFormedDiagnostic,
     submitted: false,
     txId: null,
+    blockHash: '',
+    inclusionStatus: null,
     submissionDiagnostic: null,
   };
 
@@ -435,16 +560,23 @@ async function main() {
     try {
       const mode = submitMode();
       debug(`submitting transaction with mode=${mode}`);
+      const applyRawSubmit = (submitResult) => {
+        result.txId = submitResult.txId;
+        result.blockHash = submitResult.blockHash || '';
+        result.inclusionStatus = submitResult.inclusionStatus || null;
+      };
       if (mode === 'raw-rpc' || mode === 'raw_rpc' || mode === 'raw') {
-        result.txId = await submitFinalizedTxToNode(balancedTxHex);
+        applyRawSubmit(await submitFinalizedTxToNode(balancedTxHex));
       } else if (mode === 'sdk' || mode === 'wallet' || mode === 'wallet-sdk') {
         result.txId = await submitWithWalletSdk(wallet, balanced);
+        result.inclusionStatus = 'sdkSubmitted';
       } else if (mode === 'sdk-then-raw-rpc' || mode === 'fallback' || mode === 'sdk-fallback') {
         try {
           result.txId = await submitWithWalletSdk(wallet, balanced);
+          result.inclusionStatus = 'sdkSubmitted';
         } catch (sdkError) {
           result.submissionDiagnostic = `wallet SDK submit failed, retrying raw RPC: ${errorDetails(sdkError)}`;
-          result.txId = await submitFinalizedTxToNode(balancedTxHex);
+          applyRawSubmit(await submitFinalizedTxToNode(balancedTxHex));
         }
       } else {
         throw new Error(`unsupported MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=${mode}; expected sdk, raw-rpc, or sdk-then-raw-rpc`);

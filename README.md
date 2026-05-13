@@ -8,7 +8,7 @@ proof server does the heavy proof generation
 proof server never receives the raw secret key
 ```
 
-The current PoC can prove a real unspent shielded output from the Midnight preview chain, assemble a sealed transaction, and optionally submit that transaction to the preview chain.
+The current PoC can prove a real unspent shielded output from the Midnight preview chain, assemble a sealed split-send transaction, and submit that transaction to the configured local or preview chain.
 
 ## Current Flow
 
@@ -179,7 +179,7 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
 Expected output:
 
 ```text
-proved preview output key_index=0 mt_index=1622 value=500 token=<token-type> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_len=<hex chars> submitted=false
+split-sent preview output key_index=0 mt_index=1622 value=500 token=<token-type> recipient=<shielded-address> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
 ```
 
 To call an already running proof server:
@@ -190,24 +190,17 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
   -- --proof-server-url http://127.0.0.1:6300
 ```
 
-Submit the assembled transaction to the actual preview chain through the wallet SDK:
+The preview e2e always performs the full split-send transaction: local client
+derivation proof, server split spend proof, local transaction assembly with a
+recipient shielded output, wallet SDK Dust fee balancing, then submission of the
+finalized transaction. It requires `MIDNIGHT_PREVIEW_RECOVERY_PHRASE` and
+`MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`.
 
-```bash
-MIDNIGHT_PREVIEW_SUBMIT_TX=true \
-cargo run --offline -p midnight-proof-server --bin preview-split-prove \
-  --manifest-path deps/midnight-ledger/Cargo.toml
-```
-
-The full e2e submit path is: local client derivation proof, server split proof,
-local split transaction assembly, wallet SDK Dust fee balancing, then raw RPC
-submission of the finalized transaction. It requires `MIDNIGHT_PREVIEW_RECOVERY_PHRASE`; direct
-`MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX` is still supported for prove-only runs.
-
-`MIDNIGHT_PREVIEW_SUBMIT_MODE=raw-rpc` is the default when
-`MIDNIGHT_PREVIEW_SUBMIT_TX=true`; it still uses the wallet SDK to sync Dust,
-add fee-balancing `DustActions`, and finalize the transaction before wrapping it
-as a node extrinsic. Use `MIDNIGHT_PREVIEW_SUBMIT_MODE=wallet` to submit through
-the wallet SDK watcher instead.
+`MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc` is the default. It still uses the
+wallet SDK to sync Dust, add fee-balancing `DustActions`, and finalize the
+transaction before wrapping it as a node extrinsic. Use
+`MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=wallet` to submit through the wallet SDK
+watcher instead.
 The helper uses local wallet SDK packages when installed, or
 `../one-am-wallet/node_modules`; override with `MIDNIGHT_PREVIEW_WALLET_NODE_MODULES`.
 First-time Dust proving may need to download and verify Dust proving assets; the
@@ -215,8 +208,26 @@ helper retries `finalizeRecipe` twice by default. Tune with
 `MIDNIGHT_PREVIEW_DUST_PROVE_ATTEMPTS` and
 `MIDNIGHT_PREVIEW_DUST_PROVE_RETRY_DELAY_MS`.
 
-This spends the selected preview-chain shielded output and creates a replacement
-output back to the same wallet key.
+For local Docker runs, the node and indexer images need matching ledger/zswap
+code. If a rebuilt node accepts the split-send but the standalone indexer exits
+with `Invalid proof -- while verifying Zswap proof`, rebuild or override
+`MIDNIGHT_INDEXER_IMAGE` with an indexer image built against the same ledger
+changes.
+
+To verify transaction correctness without relying on the indexer's post-submit
+replay, the e2e path verifies the Zswap input/output proofs on the Rust side
+using the locally-built zswap crate, and the wallet helper uses
+`author_submitAndWatchExtrinsic` to wait for the node to report `inBlock` (or
+`finalized`) inclusion. Tune with
+`MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR=submitted|inBlock|finalized`. The optional
+JS-side `ledger.wellFormed` check (opt in with
+`MIDNIGHT_PREVIEW_VALIDATE_LEDGER_WASM=1`) is off by default because the
+registry `@midnight-ntwrk/ledger-v8` wasm links the packaged zswap verifier
+and will reject locally-modified proofs.
+
+This spends the selected preview-chain shielded output and creates a shielded
+output for `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`; it does not use the
+normal wallet transfer path for the token movement.
 
 Run the synthetic HTTP e2e test:
 
@@ -230,15 +241,7 @@ Run the live preview-wallet e2e test:
 
 ```bash
 MIDNIGHT_RUN_PREVIEW_E2E=1 \
-cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
-  --manifest-path deps/midnight-ledger/Cargo.toml \
-  -- --nocapture
-```
-
-Run the live submit-to-preview-chain e2e:
-
-```bash
-MIDNIGHT_RUN_PREVIEW_E2E=1 MIDNIGHT_PREVIEW_SUBMIT_TX=true \
+MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver> \
 cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --nocapture
