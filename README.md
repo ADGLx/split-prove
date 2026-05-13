@@ -94,3 +94,17 @@ cargo test --offline -p midnight-proof-server synthetic_client_derivation_proof_
 ```
 
 See [POC_RUNBOOK.md](POC_RUNBOOK.md) for environment variables, endpoint shapes, and tuning knobs.
+
+## Known Shortcoming: Trusted Admission Gate
+
+The `spend-split` circuit verifies Merkle membership and structural consistency of `pk` / `nullifier` / `commitmentHash`, but — by design, since the whole point is to remove `sk` from the server — it does **not** check `nullifier = H(sk, coin)` or `pk = derive(sk)`. The `clientDerivationProof` is what attests to that link.
+
+In this PoC the proof server verifies `clientDerivationProof` off-chain before generating the split spend proof, but the final ledger-verified artifact does **not** recursively verify or aggregate the client proof. An attacker who bypasses the proof server and proves `spend-split` directly with arbitrary `pk` / `nullifier` against any public commitment can have the ledger accept it — effectively stealing the coin's value to a `pk` they control. The real owner's later spend would still succeed (their nullifier differs), but the value is already gone.
+
+This means the proof server is currently in the trusted computing base. Production fixes (any of):
+
+- Recursively verify `clientDerivationProof` inside `spend-split`.
+- Aggregate the client and spend proofs into one ledger-submitted artifact.
+- Bind the client proof's public outputs into `spend-split` public inputs so the ledger verifier checks both at submit time.
+
+Until one of these lands, "split proving" here means "split proving gated by a trusted admission server".
