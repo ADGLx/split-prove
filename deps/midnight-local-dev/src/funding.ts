@@ -17,6 +17,11 @@ import { type Config } from './config.js';
 
 const NIGHT_AMOUNT = 50_000n * 10n ** 6n; // 50,000 NIGHT in smallest unit
 const MAX_ACCOUNTS = 10;
+const SPLIT_PROVE_DEFAULT_ACCOUNTS_FILE = './accounts.json';
+const SPLIT_PROVE_DEFAULT_SHIELDED_ADDRESS =
+  'mn_shield-addr_undeployed19jm7g77mtwmtrxj3p87gr7x9u7nup8t3ffqdww47npw0p2676j402vdmzu55upv4fs3xa8rmz8d9985ayuy2regl00hujxzad8ktzfgpnr7m7';
+const SPLIT_PROVE_SHIELDED_TRANSFER_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 5_000;
 
 let logger: Logger = pino({ level: 'silent' });
 
@@ -40,6 +45,37 @@ interface AccountConfig {
 
 interface AccountsFile {
   accounts: AccountConfig[];
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function retryTransfer<T>(
+  label: string,
+  attempts: number,
+  transfer: () => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      if (attempt > 1) {
+        logger.info(`${label}: retrying attempt ${attempt}/${attempts}...`);
+      }
+      return await transfer();
+    } catch (e) {
+      lastError = e;
+      const message = e instanceof Error ? e.message : String(e);
+      if (attempt >= attempts) {
+        break;
+      }
+
+      logger.warn(`${label}: attempt ${attempt}/${attempts} failed: ${message}`);
+      logger.warn(`Waiting ${RETRY_DELAY_MS / 1000}s for wallet/proof-server state to settle before retrying...`);
+      await sleep(RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
 }
 
 /**
@@ -276,7 +312,7 @@ export async function fundShieldedAddresses(
     );
 
     logger.info(`Transferring ${NIGHT_AMOUNT} NIGHT to shielded address...`);
-    const txId = await transferShieldedNight(masterWallet, shieldedAddress, NIGHT_AMOUNT);
+    const txId = await transferShieldedNightWithRetry(masterWallet, shieldedAddress, NIGHT_AMOUNT, 1);
     logger.info(`Transfer submitted: ${txId}`);
 
     funded.push({
@@ -290,5 +326,59 @@ export async function fundShieldedAddresses(
   }
 
   logger.info(`\nAll ${addressStrings.length} shielded addresses funded with NIGHT.`);
+  return funded;
+}
+
+async function transferShieldedNightWithRetry(
+  masterWallet: WalletContext,
+  receiverAddress: ShieldedAddress,
+  amount: bigint,
+  attempts: number,
+): Promise<string> {
+  return retryTransfer('Shielded NIGHT transfer', attempts, async () => {
+    await waitForSync(masterWallet.wallet);
+    return transferShieldedNight(masterWallet, receiverAddress, amount);
+  });
+}
+
+export async function fundSplitProveE2ESetup(
+  masterWallet: WalletContext,
+  config: Config,
+): Promise<FundedAccount[]> {
+  const accountsFile = process.env.MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE || SPLIT_PROVE_DEFAULT_ACCOUNTS_FILE;
+  const shieldedAddressInput =
+    process.env.MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS || SPLIT_PROVE_DEFAULT_SHIELDED_ADDRESS;
+
+  logger.info('Preparing split-prove e2e local funding...');
+  logger.info(`Accounts file: ${accountsFile}`);
+  logger.info(`Split-prove shielded address: ${shieldedAddressInput}`);
+
+  const funded = await fundFromConfigFile(masterWallet, accountsFile, config);
+
+  const parsed = MidnightBech32m.parse(shieldedAddressInput);
+  const shieldedAddress = ShieldedAddress.codec.decode(
+    config.networkId as Parameters<typeof ShieldedAddress.codec.decode>[0],
+    parsed,
+  );
+
+  logger.info('Funding split-prove shielded wallet with retry...');
+  const txId = await transferShieldedNightWithRetry(
+    masterWallet,
+    shieldedAddress,
+    NIGHT_AMOUNT,
+    SPLIT_PROVE_SHIELDED_TRANSFER_ATTEMPTS,
+  );
+  logger.info(`Split-prove shielded transfer submitted: ${txId}`);
+
+  funded.push({
+    name: 'split-prove-e2e-shielded',
+    unshieldedAddr: 'N/A',
+    shieldedAddr: shieldedAddressInput,
+    dustAddr: 'N/A',
+    nightBalance: NIGHT_AMOUNT,
+    dustBalance: 0n,
+  });
+
+  logger.info('Split-prove e2e local funding complete.');
   return funded;
 }

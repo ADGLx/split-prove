@@ -20,6 +20,7 @@ import {
   fundFromConfigFile,
   fundFromPublicKeys,
   fundShieldedAddresses,
+  fundSplitProveE2ESetup,
 } from './funding.js';
 
 /**
@@ -35,6 +36,7 @@ Choose an option:
   [3] Display wallets
   [4] Exit
   [5] Fund shielded addresses directly (shielded NIGHT transfer)
+  [6] Prepare split-prove e2e funding
 > `;
 
 function displayFundedAccounts(fundedAccounts: FundedAccount[], logger: Logger): void {
@@ -91,6 +93,11 @@ async function mainMenu(
         case '5': {
           const shieldedAddrs = await rli.question('Enter shielded Bech32 addresses (comma-separated): ');
           const accounts = await fundShieldedAddresses(masterWallet, shieldedAddrs, config);
+          fundedAccounts.push(...accounts);
+          break;
+        }
+        case '6': {
+          const accounts = await fundSplitProveE2ESetup(masterWallet, config);
           fundedAccounts.push(...accounts);
           break;
         }
