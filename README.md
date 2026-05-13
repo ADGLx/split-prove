@@ -2,7 +2,7 @@
 
 Proof of concept for Midnight zswap **split proving**: the wallet keeps the raw zswap secret key, while the proof server does the heavy proof work using only derived commitment values. The server never sees the raw key.
 
-The PoC can prove a real unspent shielded output, assemble a sealed split-send transaction, and submit it to a local (or preview) Midnight chain.
+The PoC can prove a real unspent shielded output, assemble a sealed split-send transaction, and submit it to the bundled local Midnight chain. It does **not** run against the public preview chain — preview's node and indexer don't have the split-prove ledger changes and reject split-send blocks (see the [end-to-end flow](#end-to-end-flow) for why both sides need the rebuilt stack).
 
 ## Repo Layout
 
@@ -26,7 +26,7 @@ The PoC can prove a real unspent shielded output, assemble a sealed split-send t
 
 The ledger submodule is used by **both** the proof side and the verification side, which must stay in lockstep:
 
-- **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs:547](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L547) (synthetic) and [:582](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L582) (live preview). Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs`.
+- **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs:547](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L547) (synthetic, no chain) and [:582](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L582) (live full-tx against the local-dev chain). Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs` (name is historical — it targets local-dev).
 - **Indexer Docker build** — [Dockerfile.indexer:18](Dockerfile.indexer#L18) copies `deps/midnight-ledger` into the build context; the indexer's `[patch.crates-io]` redirects ledger crates to this local checkout. Without it, the stock indexer crashes on a split-send block with `Invalid proof — while verifying Zswap proof`.
 - **Node Docker build** — `deps/midnight-node` on its split-prove branch already pins the matching ledger; built once and passed to local-dev via `MIDNIGHT_NODE_IMAGE`.
 - **Circuit compilation** — [Dockerfile.compactc](Dockerfile.compactc) and [build-circuits.sh:17-18](build-circuits.sh#L17) compile `zswap-split.compact` / `dust-split.compact` out of `deps/midnight-ledger/{zswap,ledger}/` into the zkir artifacts.
@@ -48,12 +48,18 @@ If you rebuild only one side, blocks get rejected. All three pinned branches mus
 
 ```bash
 npm install
-cp .env.example .env   # set MIDNIGHT_PREVIEW_RECOVERY_PHRASE and MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS
+cp .env.example .env   # local-dev values ship populated; no edits needed
 ```
 
-Build the rebuilt indexer image once (compose default is `split-prove/indexer-standalone:local`):
+`.env.example` is committed with throwaway local-dev test wallets (a recovery phrase and a recipient shielded address only ever used against the bundled `undeployed` chain). They're safe to commit. The `MIDNIGHT_PREVIEW_*` prefix on these vars is historical — every value targets local-dev.
+
+Build the rebuilt node and indexer images once:
 
 ```bash
+# Node — context must be the parent repo root (Cargo paths reach into deps/midnight-ledger)
+docker build -f deps/midnight-node/Dockerfile.split-prove -t midnight-node:split-prove-0.22.3 .
+
+# Indexer
 docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
 ```
 
@@ -62,20 +68,21 @@ docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
 ```bash
 cd deps/midnight-local-dev
 npm install
-MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> npm start
+MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 npm start
 ```
 
-Exposes node `127.0.0.1:9944`, indexer `:8088`, proof server `:6300`. In the CLI, pick **option 6** to fund the split-prove wallet.
+Exposes node `127.0.0.1:9944`, indexer `:8088`, proof server `:6300`. In the CLI, pick **option 6** to fund the split-prove wallet (the address from `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` in `.env`).
 
 ### Run the live e2e (full split-send tx against the local chain)
 
 ```bash
 MIDNIGHT_RUN_PREVIEW_E2E=1 \
-MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver> \
 cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --nocapture
 ```
+
+(`MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` is already set in `.env`.)
 
 Or run the driver binary directly (handy when iterating):
 
