@@ -179,7 +179,7 @@ This is the one-step local setup for the split-prove e2e. It runs option 1 again
 mn_shield-addr_undeployed19jm7g77mtwmtrxj3p87gr7x9u7nup8t3ffqdww47npw0p2676j402vdmzu55upv4fs3xa8rmz8d9985ayuy2regl00hujxzad8ktzfgpnr7m7
 ```
 
-The final shielded transfer is retried up to three times. The retry covers a known transient proof-server failure where the first shielded transfer can fail during `/prove` with `Failed direct assertion`, while a subsequent attempt succeeds after wallet state is reverted.
+The final shielded transfer defaults to 50,000 NIGHT and is retried up to three times. The retry covers a known transient proof-server failure where the first shielded transfer can fail during `/prove` with `Failed direct assertion`, while a subsequent attempt succeeds after wallet state is reverted.
 
 Override the defaults with:
 
@@ -187,6 +187,7 @@ Override the defaults with:
 |---|---|---|
 | `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE` | `./accounts.json` | Accounts file used for the option 1 part of setup |
 | `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS` | split-prove test wallet address | Shielded address to fund for the e2e spender |
+| `MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT` | `50000000000` | Shielded amount for the e2e spender, in smallest NIGHT units |
 
 ---
 
@@ -307,6 +308,7 @@ Copy `.env.example` to `.env` and configure as needed:
 | `MIDNIGHT_PROOF_SERVER_IMAGE` | `midnightntwrk/proof-server:8.0.3` | Docker image for the local proof server |
 | `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE` | `./accounts.json` | Option 6 accounts file |
 | `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS` | split-prove test wallet address | Option 6 shielded spender funding target |
+| `MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT` | `50000000000` | Option 6 shielded spender funding amount, in smallest NIGHT units |
 
 ---
 

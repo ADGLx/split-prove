@@ -20,6 +20,7 @@ const MAX_ACCOUNTS = 10;
 const SPLIT_PROVE_DEFAULT_ACCOUNTS_FILE = './accounts.json';
 const SPLIT_PROVE_DEFAULT_SHIELDED_ADDRESS =
   'mn_shield-addr_undeployed19jm7g77mtwmtrxj3p87gr7x9u7nup8t3ffqdww47npw0p2676j402vdmzu55upv4fs3xa8rmz8d9985ayuy2regl00hujxzad8ktzfgpnr7m7';
+const SPLIT_PROVE_DEFAULT_SHIELDED_AMOUNT = NIGHT_AMOUNT;
 const SPLIT_PROVE_SHIELDED_TRANSFER_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5_000;
 
@@ -48,6 +49,31 @@ interface AccountsFile {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function formatNightAmount(amount: bigint): string {
+  const divisor = 10n ** 6n;
+  const whole = amount / divisor;
+  const fractional = amount % divisor;
+  if (fractional === 0n) {
+    return `${whole} NIGHT (${amount} raw)`;
+  }
+  return `${whole}.${fractional.toString().padStart(6, '0').replace(/0+$/, '')} NIGHT (${amount} raw)`;
+}
+
+function envBigInt(name: string, defaultValue: bigint): bigint {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return defaultValue;
+  }
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`${name} must be a positive integer in smallest NIGHT units`);
+  }
+  const value = BigInt(raw);
+  if (value === 0n) {
+    throw new Error(`${name} must be greater than zero`);
+  }
+  return value;
+}
 
 async function retryTransfer<T>(
   label: string,
@@ -348,10 +374,15 @@ export async function fundSplitProveE2ESetup(
   const accountsFile = process.env.MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE || SPLIT_PROVE_DEFAULT_ACCOUNTS_FILE;
   const shieldedAddressInput =
     process.env.MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS || SPLIT_PROVE_DEFAULT_SHIELDED_ADDRESS;
+  const shieldedAmount = envBigInt(
+    'MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT',
+    SPLIT_PROVE_DEFAULT_SHIELDED_AMOUNT,
+  );
 
   logger.info('Preparing split-prove e2e local funding...');
   logger.info(`Accounts file: ${accountsFile}`);
   logger.info(`Split-prove shielded address: ${shieldedAddressInput}`);
+  logger.info(`Split-prove shielded amount: ${formatNightAmount(shieldedAmount)}`);
 
   const funded = await fundFromConfigFile(masterWallet, accountsFile, config);
 
@@ -361,11 +392,11 @@ export async function fundSplitProveE2ESetup(
     parsed,
   );
 
-  logger.info('Funding split-prove shielded wallet with retry...');
+  logger.info(`Funding split-prove shielded wallet with ${formatNightAmount(shieldedAmount)} and retry...`);
   const txId = await transferShieldedNightWithRetry(
     masterWallet,
     shieldedAddress,
-    NIGHT_AMOUNT,
+    shieldedAmount,
     SPLIT_PROVE_SHIELDED_TRANSFER_ATTEMPTS,
   );
   logger.info(`Split-prove shielded transfer submitted: ${txId}`);
@@ -375,7 +406,7 @@ export async function fundSplitProveE2ESetup(
     unshieldedAddr: 'N/A',
     shieldedAddr: shieldedAddressInput,
     dustAddr: 'N/A',
-    nightBalance: NIGHT_AMOUNT,
+    nightBalance: shieldedAmount,
     dustBalance: 0n,
   });
 

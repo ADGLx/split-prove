@@ -77,6 +77,7 @@ MIDNIGHT_PREVIEW_ACCOUNT=0
 MIDNIGHT_PREVIEW_ZSWAP_KEY_SCAN_LIMIT=1
 MIDNIGHT_PREVIEW_ZSWAP_EVENT_LIMIT=50000
 MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver shielded address>
+MIDNIGHT_PREVIEW_TRANSFER_AMOUNT=500000000
 MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc
 
 MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
@@ -148,7 +149,7 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=1622 value=500 token=<token-type> recipient=<shielded-address> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
+split-sent preview output key_index=0 mt_index=1622 input_value=50000000000 transfer_value=500000000 change_value=49500000000 token=<token-type> recipient=<shielded-address> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
 ```
 
 By default the command starts a local proof server on a random port. To use an already running proof server:
@@ -159,11 +160,14 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
   -- --proof-server-url http://127.0.0.1:6300
 ```
 
-The command always assembles and submits the split-send transaction. Submission
-defaults to `MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc`, which uses the
-wallet SDK to sync Dust, add fee-balancing `DustActions`, finalize the
-transaction, and then submit the finalized transaction directly through node RPC.
-The selected wallet must have enough spendable Dust. Use
+The command always assembles and submits the split-send transaction. It sends
+`MIDNIGHT_PREVIEW_TRANSFER_AMOUNT` raw NIGHT units to
+`MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`, defaulting to 500 NIGHT, and
+returns any remainder as shielded change to the spender wallet. Submission
+defaults to `MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc`, which uses the wallet
+SDK to sync Dust, add fee-balancing `DustActions`, finalize the transaction, and
+then submit the finalized transaction directly through node RPC. The selected
+wallet must have enough spendable Dust. Use
 `MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=wallet` to submit through the wallet SDK
 watcher instead.
 The helper uses local wallet SDK packages when installed, or
