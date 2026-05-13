@@ -9,7 +9,7 @@ services:
       RUST_BACKTRACE: 'full'
   indexer:
     container_name: 'midnight-indexer'
-    image: '${MIDNIGHT_INDEXER_IMAGE:-midnightntwrk/indexer-standalone:4.0.1}'
+    image: '${MIDNIGHT_INDEXER_IMAGE:-split-prove/indexer-standalone:local}'
     env_file: standalone.env.example
     ports:
       - '127.0.0.1:8088:8088'

@@ -109,6 +109,27 @@ npm start
 The local chain uses `network_id=undeployed` and exposes `9944`, `8088`, and
 `6300` on localhost.
 
+### Rebuilt Indexer
+
+The compose default for `MIDNIGHT_INDEXER_IMAGE` is
+`split-prove/indexer-standalone:local`, which is the v4.0.1 indexer rebuilt
+against `deps/midnight-ledger` so its Zswap verifier matches the rebuilt node.
+Build it once with:
+
+```bash
+docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+```
+
+The indexer source lives at `deps/midnight-indexer` (submodule pointing at
+`ADGLx/midnight-indexer`, branch `feature/split-prove-indexer-4.0.1`). Re-run
+the docker build after any change to that submodule or to
+`deps/midnight-ledger`. To run against the stock 4.0.1 image instead (which
+will crash on the split-send block), override:
+
+```bash
+MIDNIGHT_INDEXER_IMAGE=midnightntwrk/indexer-standalone:4.0.1 npm start
+```
+
 ## Run The Preview PoC
 
 Install dependencies once:
@@ -152,13 +173,15 @@ helper retries `finalizeRecipe` twice by default. Tune with
 `MIDNIGHT_PREVIEW_DUST_PROVE_ATTEMPTS` and
 `MIDNIGHT_PREVIEW_DUST_PROVE_RETRY_DELAY_MS`.
 
-When testing against the local Docker stack, keep the node and indexer images on
-matching ledger/zswap code. A rebuilt node can accept a split-send transaction
-that the stock `midnightntwrk/indexer-standalone:4.0.1` image rejects while
-replaying blocks, because that image links its own packaged ledger crates. If
-the indexer exits with `malformed transaction: Invalid proof -- while verifying
-Zswap proof`, rebuild or override `MIDNIGHT_INDEXER_IMAGE` from an indexer source
-checkout that uses the same ledger changes as the node.
+When testing against the local Docker stack, the node and indexer images need
+matching ledger/zswap code. The rebuilt indexer image
+(`split-prove/indexer-standalone:local`, built from
+`deps/midnight-indexer` against `deps/midnight-ledger`) is the compose default
+and replays split-send blocks successfully. The stock
+`midnightntwrk/indexer-standalone:4.0.1` image links its own packaged ledger
+crates and will exit with
+`malformed transaction: Invalid proof -- while verifying Zswap proof` while
+replaying the block containing a split-send tx.
 
 To verify transaction correctness without relying on the indexer's post-submit
 replay, the e2e path uses these checks:

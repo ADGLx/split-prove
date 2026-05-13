@@ -6,3 +6,7 @@
 	path = deps/midnight-node
 	url = https://github.com/ADGLx/midnight-node.git
 	branch = feature/split-prove-node-0.22.3
+[submodule "deps/midnight-indexer"]
+	path = deps/midnight-indexer
+	url = https://github.com/ADGLx/midnight-indexer.git
+	branch = feature/split-prove-indexer-4.0.1

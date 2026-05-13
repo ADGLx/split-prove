@@ -161,6 +161,19 @@ The local network exposes the node, indexer, and proof server at the usual
 undeployed endpoints: `127.0.0.1:9944`, `127.0.0.1:8088`, and
 `127.0.0.1:6300`.
 
+The indexer compose default is `split-prove/indexer-standalone:local`, the
+v4.0.1 indexer rebuilt against `deps/midnight-ledger` so its Zswap verifier
+matches the rebuilt node. Build it from the repo root:
+
+```bash
+docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+```
+
+Source for the rebuilt indexer is `deps/midnight-indexer`
+(`ADGLx/midnight-indexer` on branch `feature/split-prove-indexer-4.0.1`).
+Re-run the docker build after changes to that submodule or to
+`deps/midnight-ledger`.
+
 ## Run
 
 Run the root toy demo:
@@ -209,10 +222,11 @@ helper retries `finalizeRecipe` twice by default. Tune with
 `MIDNIGHT_PREVIEW_DUST_PROVE_RETRY_DELAY_MS`.
 
 For local Docker runs, the node and indexer images need matching ledger/zswap
-code. If a rebuilt node accepts the split-send but the standalone indexer exits
-with `Invalid proof -- while verifying Zswap proof`, rebuild or override
-`MIDNIGHT_INDEXER_IMAGE` with an indexer image built against the same ledger
-changes.
+code. The rebuilt `split-prove/indexer-standalone:local` image (compose
+default) handles the split-send block; the stock
+`midnightntwrk/indexer-standalone:4.0.1` image exits with
+`Invalid proof -- while verifying Zswap proof` while replaying it. See the
+[Local Chain](#local-chain) section above for the docker build command.
 
 To verify transaction correctness without relying on the indexer's post-submit
 replay, the e2e path verifies the Zswap input/output proofs on the Rust side
