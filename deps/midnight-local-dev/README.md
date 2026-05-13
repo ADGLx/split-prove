@@ -11,6 +11,8 @@ A standalone tool for running a local Midnight development network and funding t
 - [Funding Options](#funding-options)
   - [Option 1: Fund from Config File (NIGHT + DUST)](#option-1-fund-from-config-file-night--dust)
   - [Option 2: Fund by Public Key (NIGHT Only)](#option-2-fund-by-public-key-night-only)
+  - [Option 5: Fund Shielded Addresses Directly](#option-5-fund-shielded-addresses-directly)
+  - [Option 6: Prepare Split-Prove E2E Funding](#option-6-prepare-split-prove-e2e-funding)
 - [Connecting Your DApp](#connecting-your-dapp)
 - [Running the Network Standalone (Without the Funding CLI)](#running-the-network-standalone-without-the-funding-cli)
 - [Accounts Config File Format](#accounts-config-file-format)
@@ -63,9 +65,11 @@ Then the main menu:
 ```
 Choose an option:
   [1] Fund accounts from config file (NIGHT + DUST registration)
-  [2] Fund accounts by public key (NIGHT transfer only)
-  [3] Display master wallet balances
+  [2] Fund accounts by unshielded address (NIGHT transfer only)
+  [3] Display wallets
   [4] Exit
+  [5] Fund shielded addresses directly (shielded NIGHT transfer)
+  [6] Prepare split-prove e2e funding
 >
 ```
 
@@ -93,7 +97,7 @@ All services use the `undeployed` network ID with the `dev` node preset.
 | Service | Image | Version |
 |---|---|---|
 | Node | `midnightntwrk/midnight-node` | `0.22.3` |
-| Indexer | `midnightntwrk/indexer-standalone` | `4.0.1` |
+| Indexer | `split-prove/indexer-standalone` | `local` |
 | Proof Server | `midnightntwrk/proof-server` | `8.0.3` |
 
 The Compose file accepts image overrides for local builds or patched runtime images:
@@ -103,6 +107,8 @@ MIDNIGHT_NODE_IMAGE=midnight-node:split-prove npm start
 ```
 
 Supported overrides are `MIDNIGHT_NODE_IMAGE`, `MIDNIGHT_INDEXER_IMAGE`, and `MIDNIGHT_PROOF_SERVER_IMAGE`. When any override is set, the fresh-start path allows registry pull failures so locally tagged images can be used.
+
+The default indexer image is a local rebuild of indexer `4.0.1` against this checkout's `deps/midnight-ledger`. That keeps indexer Zswap verification aligned with a locally rebuilt split-prove node. Override `MIDNIGHT_INDEXER_IMAGE` only when you know the image uses matching ledger/zswap code.
 
 ### Wallet SDK Compatibility Matrix
 
@@ -153,6 +159,34 @@ Enter Bech32 addresses (comma-separated): mn1q..., mn1q...
 ```
 
 Each address receives 50,000 NIGHT. **DUST is not registered** — recipients must register for DUST themselves before they can pay transaction fees.
+
+### Option 5: Fund Shielded Addresses Directly
+
+Best when you need a wallet to own a shielded NIGHT output. Provide one or more shielded Bech32 addresses separated by commas.
+
+```
+> 5
+Enter shielded Bech32 addresses (comma-separated): mn_shield-addr_undeployed1...
+```
+
+Each address receives 50,000 NIGHT into its shielded balance. This path does not register DUST for the recipient because it only has the recipient address, not the recipient mnemonic. The transfer is performed by the genesis master wallet and uses the configured proof server for shielded proving.
+
+### Option 6: Prepare Split-Prove E2E Funding
+
+This is the one-step local setup for the split-prove e2e. It runs option 1 against `./accounts.json`, then sends a shielded NIGHT output to the split-prove spender address:
+
+```text
+mn_shield-addr_undeployed19jm7g77mtwmtrxj3p87gr7x9u7nup8t3ffqdww47npw0p2676j402vdmzu55upv4fs3xa8rmz8d9985ayuy2regl00hujxzad8ktzfgpnr7m7
+```
+
+The final shielded transfer is retried up to three times. The retry covers a known transient proof-server failure where the first shielded transfer can fail during `/prove` with `Failed direct assertion`, while a subsequent attempt succeeds after wallet state is reverted.
+
+Override the defaults with:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE` | `./accounts.json` | Accounts file used for the option 1 part of setup |
+| `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS` | split-prove test wallet address | Shielded address to fund for the e2e spender |
 
 ---
 
@@ -269,8 +303,10 @@ Copy `.env.example` to `.env` and configure as needed:
 |---|---|---|
 | `DEBUG_LEVEL` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 | `MIDNIGHT_NODE_IMAGE` | `midnightntwrk/midnight-node:0.22.3` | Docker image for the local Midnight node |
-| `MIDNIGHT_INDEXER_IMAGE` | `midnightntwrk/indexer-standalone:4.0.1` | Docker image for the local indexer |
+| `MIDNIGHT_INDEXER_IMAGE` | `split-prove/indexer-standalone:local` | Docker image for the local indexer |
 | `MIDNIGHT_PROOF_SERVER_IMAGE` | `midnightntwrk/proof-server:8.0.3` | Docker image for the local proof server |
+| `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE` | `./accounts.json` | Option 6 accounts file |
+| `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS` | split-prove test wallet address | Option 6 shielded spender funding target |
 
 ---
 
@@ -283,7 +319,7 @@ Copy `.env.example` to `.env` and configure as needed:
 │  src/index.ts     Entry point & interactive menu │
 │  src/network.ts   Docker compose orchestration   │
 │  src/wallet.ts    Wallet SDK operations          │
-│  src/funding.ts   NIGHT transfer & DUST reg.     │
+│  src/funding.ts   Funding flows & retry setup    │
 │  src/config.ts    Network endpoint config        │
 │  src/logger.ts    Pino logger setup              │
 └──────────┬──────────────────────────┬────────────┘
@@ -295,19 +331,37 @@ Copy `.env.example` to `.env` and configure as needed:
 │  Docker Compose  │   │   Midnight Blockchain    │
 │                  │   │                          │
 │  ┌────────────┐  │   │  Genesis Wallet (master) │
-│  │    Node    │◄─┼───┤  ├─ Transfer NIGHT       │
+│  │    Node    │◄─┼───┤  ├─ Transfer unshielded  │
 │  │   :9944    │  │   │  ├─ Register DUST        │
-│  └────────────┘  │   │  └─ Fund recipients      │
-│  ┌────────────┐  │   │                          │
-│  │  Indexer   │  │   │  Recipient Wallets       │
-│  │   :8088    │  │   │  ├─ From mnemonic        │
-│  └────────────┘  │   │  └─ From Bech32 address  │
-│  ┌────────────┐  │   └──────────────────────────┘
-│  │   Proof    │  │
-│  │  Server    │  │
-│  │   :6300    │  │
+│  └────────────┘  │   │  ├─ Transfer shielded    │
+│  ┌────────────┐  │   │  └─ Retry split setup    │
+│  │  Indexer   │◄─┼───┤                          │
+│  │   :8088    │  │   │  Recipient Wallets       │
+│  └────────────┘  │   │  ├─ From mnemonic        │
+│  ┌────────────┐  │   │  ├─ From unshielded addr │
+│  │   Proof    │◄─┼───┤  └─ From shielded addr   │
+│  │  Server    │  │   │                          │
+│  │   :6300    │  │   └──────────────────────────┘
 │  └────────────┘  │
 └──────────────────┘
+```
+
+The split-prove live e2e uses the same node and indexer, but it starts its own locally built Rust proof-server process from `deps/midnight-ledger` for the `/v2/prove-split-spend` endpoint. The Docker proof server is still used by the wallet SDK funding flows for normal shielded and DUST proofs.
+
+```text
+Option 6 setup:
+  genesis master wallet
+    ├── fund accounts.json wallets with unshielded NIGHT
+    ├── register recipient DUST when possible
+    └── fund split-prove shielded spender address, retrying transient proof failures
+
+Split-prove e2e:
+  funded spender wallet
+    ├── reads Zswap events from local indexer
+    ├── builds client derivation proof and handoff
+    ├── posts split spend to local Rust proof server
+    ├── balances Dust with wallet SDK
+    └── submits finalized tx to local node
 ```
 
 ### Startup Sequence
@@ -333,7 +387,11 @@ Copy `.env.example` to `.env` and configure as needed:
    ├── Submit registration transaction
    └── Wait for dust balance > 0
 
-4. Interactive menu (fund accounts, check balances, exit)
+4. Interactive menu
+   ├── Option 1: fund accounts from a mnemonic config and register DUST
+   ├── Option 2: transfer unshielded NIGHT to public addresses
+   ├── Option 5: transfer shielded NIGHT to shielded addresses
+   └── Option 6: run the split-prove e2e funding sequence
 
 5. Cleanup on exit
    ├── Close all wallet connections
@@ -345,7 +403,7 @@ Copy `.env.example` to `.env` and configure as needed:
 - **NIGHT**: The native token on Midnight. The genesis block mints a large supply accessible via the master wallet seed.
 - **DUST**: Transaction fees on Midnight are paid in DUST, which is generated by registering NIGHT UTXOs. Without DUST registration, a wallet cannot submit transactions even if it holds NIGHT.
 - **Master Wallet**: The genesis wallet (seed `0x00...001`) that holds all initially minted tokens. All funding transfers originate from this wallet.
-- **Unshielded vs Shielded**: NIGHT can be held in unshielded (public) or shielded (private) form. This tool transfers unshielded NIGHT.
+- **Unshielded vs Shielded**: NIGHT can be held in unshielded (public) or shielded (private) form. This tool can transfer either form, depending on the selected funding option.
 
 ---
 

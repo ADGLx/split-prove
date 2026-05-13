@@ -37,9 +37,10 @@ proof server
   prove midnight/zswap/spend-split
   return proofHex + provedInputHex
 
-preview chain
+configured chain
   indexer read for wallet state
-  optional Dust balancing and submission through the wallet SDK
+  wallet SDK Dust balancing
+  raw RPC or wallet SDK submission
 ```
 
 The only wallet work that is new for split proving is the handoff construction. Key derivation, chain sync, owned-output decryption, spent filtering, and Merkle tracking are normal wallet responsibilities.
@@ -57,17 +58,26 @@ derive handoff:
   nullifier = H(sk, coin)                    receives:
   commitmentHash = commit(pk, coin)            skCommitment
   skCommitment = H(sk, blinding)               clientDerivationProof
-  coin metadata                                nullifier
-  Merkle witness/state                         pk
-                                                commitmentHash
+  clientDerivationProof                        nullifier
+  coin metadata                                pk
+  Merkle witness/state                         commitmentHash
                                                 coin metadata
                                                 Merkle witness/state
 
-POST /v2/prove-split-spend  ───────────────▶  Input::new_split(...)
+POST /v2/prove-split-spend  ───────────────▶  verify clientDerivationProof
+                                                reject fake/simulated tree state
+                                                Input::new_split(...)
                                                 ↓
                                               prove spend-split
 
-proofHex                    ◀───────────────  serialized proof
+proofHex + provedInputHex    ◀──────────────  serialized proof + proven input
+
+assemble transaction:
+  verify returned Zswap input proof locally
+  create recipient shielded output with fresh coin nonce
+  verify output proof locally
+  wallet SDK balances Dust and finalizes
+  submit finalized tx to node
 ```
 
 The root prototype also has a smaller local demo of the same boundary:
@@ -104,6 +114,7 @@ POST /v2/prove-split-spend
 - `tools/derive_midnight_zswap_seed.mjs`: temporary preview wallet seed helper.
 - `tools/preview_balance_submit_split_tx.mjs`: wallet SDK bridge for Dust balancing and preview submission.
 - `.env.example`: preview environment template.
+- `deps/midnight-local-dev/src/funding.ts`: local node funding flows, including option 6 for split-prove e2e setup.
 - `deps/midnight-ledger/proof-server/src/endpoints.rs`: real proof-server endpoint.
 - `deps/midnight-ledger/proof-server/src/preview_client.rs`: preview CLI helper split into wallet scan, handoff build, and proof-server POST.
 - `deps/midnight-ledger/zswap/src/construct.rs`: split constructors.
@@ -160,6 +171,12 @@ npm start
 The local network exposes the node, indexer, and proof server at the usual
 undeployed endpoints: `127.0.0.1:9944`, `127.0.0.1:8088`, and
 `127.0.0.1:6300`.
+
+For the split-prove e2e setup, choose option 6 in the local-dev CLI. It funds
+the configured accounts from `accounts.json`, then sends a shielded NIGHT output
+to the default split-prove spender address used by the test. The shielded
+funding step retries transient proof-server failures, which avoids manually
+running option 5 twice.
 
 The indexer compose default is `split-prove/indexer-standalone:local`, the
 v4.0.1 indexer rebuilt against `deps/midnight-ledger` so its Zswap verifier
@@ -308,8 +325,17 @@ Important caveat for the PoC: the server now verifies a client-side derivation p
 
 ## Remaining Work
 
+Done in the PoC:
+
+- Server verifies `clientDerivationProof` before building real split spend proofs.
+- Proof-building requests must include real `zswapState` or `zswapStateFile`; the simulated single-leaf tree is only for non-proving preimage debugging.
+- The preview e2e assembles a full split-send transaction, verifies the returned input proof locally, proves the recipient output locally, Dust-balances through the wallet SDK bridge, and submits to the configured chain.
+- Local-dev option 6 funds the split-prove e2e path.
+
+Still production work:
+
 - Move the PoC preview client logic into the real wallet/client integration point.
 - Bind the server spend proof to the verified client-proof public outputs, or aggregate/recursively verify the client proof.
-- Decide whether the server API should accept full `zswapState` or a smaller Merkle witness.
+- Decide whether the production server API should accept full `zswapState` or a smaller Merkle witness.
 - Move the wallet SDK Dust balancing bridge into the real wallet/client integration point.
-- Harden request validation and proof-server operational behavior.
+- Continue hardening request validation and proof-server operational behavior beyond the PoC checks.
