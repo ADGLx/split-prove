@@ -1,6 +1,6 @@
 # Split-Prove Prototype
 
-Proof of concept for Midnight zswap **split proving**: the wallet keeps the raw zswap secret key, while the proof server does the heavy proof work using only derived commitment values. The server never sees the raw key.
+Proof of concept for Midnight zswap **split proving**: the wallet keeps the raw zswap secret key, while the proof server builds the split-spend proof using only derived commitment values. The server never sees the raw key. The current client-derivation proof is not a negligible step; in the generated artifacts it is larger than the split-spend proof.
 
 The PoC can prove a real unspent shielded output, assemble a sealed split-send transaction, and submit it to the bundled local Midnight chain. It does **not** run against the public preview chain — preview's node and indexer don't have the split-prove ledger changes and reject split-send blocks (see the [end-to-end flow](#end-to-end-flow) for why both sides need the rebuilt stack).
 
@@ -36,7 +36,7 @@ If you rebuild only one side, blocks get rejected. All three pinned branches mus
 ## End-to-End Flow
 
 1. **Fund** — `midnight-local-dev` option 6 (`deps/midnight-local-dev/src/funding.ts`) sends a shielded NIGHT output to the split-prove wallet and polls the indexer until it appears.
-2. **Derive (client)** — `preview-split-prove` reads the unspent output, derives `skCommitment` / `nullifier` / `commitmentHash` locally, and proves the **client-derivation circuit**.
+2. **Derive (client)** — `preview-split-prove` reads the unspent output, derives `skCommitment` / `nullifier` / `commitmentHash` locally, and proves the **client-derivation circuit**. This proof binds `sk` to the public handoff values, so it must be produced by the wallet.
 3. **Handoff** — POST to `/v2/prove-split-spend` ([deps/midnight-ledger/proof-server/src/endpoints.rs](deps/midnight-ledger/proof-server/src/endpoints.rs)).
 4. **Split proof (server)** — server pre-verifies the client-derivation proof, calls `Input::new_split` ([deps/midnight-ledger/zswap/src/construct.rs](deps/midnight-ledger/zswap/src/construct.rs)) and proves `midnight/zswap/spend-split` using artifacts in `deps/midnight-ledger/zswap/static/`.
 5. **Assemble (client)** — verifies the returned `Input<Proof>` locally, proves a recipient shielded output, and Dust-balances + finalizes via the wallet SDK bridge ([tools/preview_balance_submit_split_tx.mjs](tools/preview_balance_submit_split_tx.mjs)).
@@ -98,6 +98,17 @@ Per-stage `tracing` events during the run, then a final banner (real numbers):
 ```
 
 The three role headers map onto the six stages in [End-to-End Flow](#end-to-end-flow), making the split-prove boundary visible. The **role boundary check** statically enumerates the `ClientHandoff` fields — the point of split-prove is that no `sk` field appears here.
+
+### Proof Cost Note
+
+The server owns the split-spend proof, but the current wallet-side client-derivation proof is the larger generated circuit. Mock-compiling the shipped artifacts gives:
+
+| Circuit | Location | k | rows | prover key |
+|---|---|---:|---:|---:|
+| `sk_prove` | `circuits/static/client-derivation/` | 14 | 14,601 | 5.21 MB |
+| `spend-split` | `deps/midnight-ledger/zswap/static/` | 12 | 3,844 | 1.36 MB |
+
+That is why local wallet proving can take longer than server split proving in the e2e output. The client circuit proves `sk -> skCommitment/pk/coinCommitment/nullifier` and includes three `persistentHash` gadgets. The split-spend circuit proves Merkle membership, nullifier insertion, and value commitment, but as currently compiled it is smaller. A tiny local chain can make scanning and path construction cheaper, but it does not explain this proof-time ordering.
 
 ### Troubleshooting
 

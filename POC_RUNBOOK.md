@@ -7,7 +7,7 @@ wallet/client keeps the zswap secret key
 proof server builds and proves a split spend without seeing that key
 ```
 
-The wallet already knows how to derive keys, sync/index chain data, decrypt owned shielded outputs, filter spent outputs, and maintain the zswap Merkle state. The new wallet-side work for split proving is the **handoff**: compute the split-prove request fields and send them to the proof server.
+The wallet already knows how to derive keys, sync/index chain data, decrypt owned shielded outputs, filter spent outputs, and maintain the zswap Merkle state. The new wallet-side work for split proving is the **handoff** plus a real local proof: it computes the split-prove request fields and proves that the wallet knows the `sk` linking those fields.
 
 ## Current Flow
 
@@ -45,6 +45,17 @@ The live e2e always spends the selected preview-chain shielded output and create
 a shielded output for `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`. The token
 movement is full split-send only: client derivation proof -> server split proof
 -> split transaction assembly -> wallet SDK Dust balancing -> submission.
+
+### Interpreting Proof Timings
+
+Do not assume the server proof is always slower just because it owns the split-spend step. In the current generated artifacts, the wallet-side client-derivation circuit is larger:
+
+| Circuit | k | rows | prover key |
+|---|---:|---:|---:|
+| `sk_prove` / client derivation | 14 | 14,601 | 5.21 MB |
+| `spend-split` / server split spend | 12 | 3,844 | 1.36 MB |
+
+The client proof contains three `persistentHash` gadgets for `pk`, `coinCommitment`, and `nullifier`, plus the secret-key commitment. The server split proof has a 32-deep Merkle path and value commitment operations, but the compiled circuit is smaller. A small local chain can reduce scan/path-building time, but it is not the main reason the server `split-spend proving` bucket is shorter.
 
 ## Important Files
 
