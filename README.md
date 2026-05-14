@@ -29,7 +29,12 @@ The ledger submodule is used by **both** the proof side and the verification sid
 - **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs) has the synthetic no-chain split test and the opt-in live full-tx test against the local-dev chain. Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs` (name is historical — it targets local-dev).
 - **Indexer Docker build** — [Dockerfile.indexer:18](Dockerfile.indexer#L18) copies `deps/midnight-ledger` into the build context; the indexer's `[patch.crates-io]` redirects ledger crates to this local checkout. Without it, the stock indexer crashes on a split-send block with `Invalid proof — while verifying Zswap proof`.
 - **Node Docker build** — `deps/midnight-node` on its split-prove branch already pins the matching ledger; built once and passed to local-dev via `MIDNIGHT_NODE_IMAGE`.
-- **Circuit compilation** — [Dockerfile.compactc](Dockerfile.compactc) and [build-circuits.sh:17-18](build-circuits.sh#L17) compile `zswap-split.compact` / `dust-split.compact` out of `deps/midnight-ledger/{zswap,ledger}/` into the zkir artifacts.
+- **Circuit compilation** — the current split-prove artifacts are generated with the local Compact CLI, not by hand-editing zkir. The direct commands are:
+  ```bash
+  compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
+  compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
+  ```
+  The generated `.zkir`, `.bzkir`, `.prover`, and `.verifier` files are then copied into `circuits/static/client-derivation/` and `deps/midnight-ledger/zswap/static/`, with `spendSplitUser.zkir` mirrored into `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
 
 If you rebuild only one side, blocks get rejected. All three pinned branches must move together.
 

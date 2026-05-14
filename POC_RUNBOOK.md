@@ -69,6 +69,17 @@ The client proof now contains only the `sk`-dependent relations: `pk = H(sk)`, `
 - `tools/derive_midnight_zswap_seed.mjs`: temporary phrase-to-zswap-seed helper for the PoC.
 - `tools/preview_balance_submit_split_tx.mjs`: wallet SDK Dust balancing and submit bridge.
 
+## Compiling Circuits
+
+Use the local Compact CLI directly when regenerating the split-prove artifacts:
+
+```bash
+compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
+compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
+```
+
+Copy the generated client derivation artifacts into `circuits/static/client-derivation/`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+
 ## Environment
 
 Create `.env`:

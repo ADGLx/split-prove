@@ -33,11 +33,16 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 - Regenerated `spend-split.{zkir,bzkir,prover,verifier}` and sha256 sidecars with the Compact compiler.
 - Mirrored the regenerated `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
 - Added [deps/midnight-ledger/zswap/static/client-derivation.verifier](deps/midnight-ledger/zswap/static/client-derivation.verifier), copied from the client-derivation circuit artifacts, so node/indexer binaries can verify the wallet proof without depending on proof-server paths.
+- Artifacts are regenerated with the local Compact CLI, for example:
+  ```bash
+  compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
+  compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
+  ```
 
 **Construct/prove/proof-server flow**
 - `Input::new_split()` returns a split proving context that carries the normal spend preimage, split public inputs, and required client proof without changing the zswap input struct layout.
 - The split proving context produces `provedInputHex` with an encoded `ZswapInputProof::Split` envelope; the HTTP endpoint no longer hand-builds the envelope.
-- `Input<ProofPreimage>::delta()` and `binding_randomness()` understand the split witness trailer (`coinCommitment`, `nullifier`) appended after `rc`; the preview submit path uses these shared helpers so sealed transactions use the same Pedersen binding randomness the node recomputes.
+- `Input<ProofPreimage>::delta()` and `binding_randomness()` understand the split witness trailer (`nullifier`) appended after `rc`; the preview submit path uses these shared helpers so sealed transactions use the same Pedersen binding randomness the node recomputes.
 - The synthetic split-spend proof-server test now deserializes `provedInputHex`, calls `Input<Proof>::well_formed(0)`, and asserts a raw split proof without the client proof, a tampered nullifier, and a malformed split envelope are rejected.
 
 **Build impact**

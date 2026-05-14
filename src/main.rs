@@ -15,6 +15,7 @@ use midnight_coin_structure::coin::{
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
+use midnight_transient_crypto::hash::{transient_hash, upgrade_from_transient};
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
@@ -68,11 +69,12 @@ pub fn client_prepare(
     // Derive pk
     let pk = sk.public_key();
 
-    // Compute nullifier
+    // Compute split-only Poseidon nullifier; mirrors NullifierZkfPreimage in
+    // circuits/sk_proof.compact.
     let coin_info = CoinInfo::from(coin);
-    let nullifier = coin_info.nullifier(&sender_evidence);
+    let nullifier = split_nullifier(&coin_info, sk);
 
-    // Compute coin commitment
+    // Compute coin commitment (still SHA-256; stock zswap funding compatibility).
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
 
     let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
@@ -86,6 +88,20 @@ pub fn client_prepare(
         qualified_coin_info: coin.clone(),
         is_contract,
     }
+}
+
+fn split_nul_domain() -> Fr {
+    let domain = b"midnight:split-nul[v1]";
+    let mut bytes = [0u8; 32];
+    bytes[..domain.len()].copy_from_slice(domain);
+    Fr::from_le_bytes(&bytes).expect("split nullifier domain fits in Fr")
+}
+
+fn split_nullifier(coin: &CoinInfo, sk: &CoinSecretKey) -> Nullifier {
+    let mut inputs = vec![split_nul_domain()];
+    coin.field_repr(&mut inputs);
+    sk.field_repr(&mut inputs);
+    Nullifier(upgrade_from_transient(transient_hash(&inputs)))
 }
 
 // ─── Server Side ────────────────────────────────────────────────────────────
