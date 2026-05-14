@@ -96,23 +96,11 @@ The server owns the split-spend proof. The wallet-side client-derivation circuit
 
 The wallet proves `pk = H_persistent(sk)`, `nullifier = H_persistent(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server proves `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, discloses the same `coinBindingTag`, inserts the public nullifier, and proves the value commitment. `pk`, `nullifier`, and `coinCommitment` stay canonical so stock-wallet funding outputs and stock spend nullifiers remain compatible with split proving.
 
-### Recent Live E2E Result
+### Current Proof Comparison
 
-Run: `make e2e` against the bundled local chain (12 workers, debug build). Rerun this after rebuilding the proof-server/node/indexer images whenever the circuit artifacts change.
+The live e2e report separates proof-only work from baseline wallet transaction work. In the current build, client local proving is roughly the same cost as server split proving: `clientDerivationProof` measured 1899 ms and the server `spend-split` proof measured 1948 ms, a 1.03x server/client ratio. This is the main shortcoming of the more robust version: proving the canonical Zswap nullifier locally keeps double-spend semantics aligned with stock spends, but it makes the wallet-side proof close to the server proof instead of much smaller.
 
-| Stage | Role | Wall-clock |
-|---|---|---:|
-| [1/6] scan | client | 300 ms |
-| [2/6] derive (of which local proving) | client | 949 ms (938 ms) |
-| [3/6] handoff (network + verify + server prove) | client → server | 1982 ms (15 + 19 + 1917) |
-| [5/6] assemble + Dust balance + submit | client → node | 8835 ms |
-| [6/6] independent on-chain verify | node | 59 ms |
-| **Total wall-clock** | | **12068 ms** |
-
-- Client local proving **938 ms** vs server split-spend **1917 ms** → server/client ratio **2.04×**.
-- Split-prove proof-only total: **2855 ms**. Use that, not the full demo wall-clock, when comparing local wallet proof work to remote split proof work.
-- The 8835 ms `assemble+` block is wallet-SDK Dust balancing and raw-RPC submit — baseline wallet transaction work, not split-prove proving overhead.
-- `inclusion_status=inBlock`, `block_hash=0xcbc5af250f...8c2b1659`. No `sk` field appears in the `ClientHandoff` that crosses the wire.
+The full demo still includes non-proof workflow costs such as scan, output proof, Dust balancing, transaction assembly, raw-RPC submission, and node inclusion. The latest run reported `inclusion_status=inBlock`, `block_hash=0x608669144ec79dddff193f9bad6a65cd7ba34426cad163588d607ec3678528ab`, and no `sk` field crossed the handoff boundary.
 
 See [POC_RUNBOOK.md](POC_RUNBOOK.md) for env vars, endpoint shapes, and tuning knobs.
 
