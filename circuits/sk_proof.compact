@@ -1,7 +1,6 @@
-// Client-side circuit: proves sk → (pk, coinCom, nullifier)
-// This is a real wallet-side proof, not just local hashing. The generated
-// artifact currently includes three persistent hashes plus the sk commitment
-// and is larger than the split-spend circuit used by the proof server.
+// Client-side circuit: proves sk → (pk, nullifier, coinBindingTag).
+// The server computes/proves coinCommitment from (coin, pk), so the wallet
+// no longer proves the canonical coin commitment locally.
 // Server verifies this proof off-chain to confirm the derived values are correct.
 
 import CompactStandardLibrary;
@@ -22,31 +21,21 @@ struct PublicKeyPreimage {
   secretKey: ZswapCoinSecretKey,
 }
 
-struct SecretCommitmentPreimage {
-  secretKey: ZswapCoinSecretKey,
-  blinding: Field,
+struct SplitCoinBindingPreimage {
+  sep: Field,
+  coin: ShieldedCoinInfo,
+  publicKey: ZswapCoinPublicKey,
 }
 
-// Public outputs: skCommitment, pk, coinCom, nullifier
-// The server uses these as inputs to spend_no_sk
-ledger skCommitment: Field;
+// Public outputs: pk, nullifier, coinBindingTag.
 ledger publicKey: ZswapCoinPublicKey;
-ledger coinCommitment: Bytes<32>;
 ledger nullifier: Bytes<32>;
+ledger coinBindingTag: Field;
 
 export circuit sk_prove(
   sk: ZswapCoinSecretKey,
-  skBlinding: Field,
   coin: ShieldedCoinInfo
 ): [] {
-  // Commit to sk without revealing it.
-  const skCom = transientHash<SecretCommitmentPreimage>(
-    SecretCommitmentPreimage {
-      secretKey: sk,
-      blinding: skBlinding,
-    });
-  skCommitment = disclose(skCom);
-
   // Derive public key from secret key
   const pk = ZswapCoinPublicKey {
     bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
@@ -55,16 +44,6 @@ export circuit sk_prove(
     })
   };
   publicKey = disclose(pk);
-
-  // Compute coin commitment (user-owned: dataType=true, data=pk)
-  const coinCom = persistentHash<CoinPreimage>(
-    CoinPreimage {
-      sep: "midnight:zswap-cc[v1]",
-      info: coin,
-      dataType: true,
-      data: pk.bytes,
-    });
-  coinCommitment = disclose(coinCom);
 
   // Compute nullifier (user-owned: dataType=true, data=sk)
   const nul = persistentHash<CoinPreimage>(
@@ -75,4 +54,11 @@ export circuit sk_prove(
       data: sk.bytes,
     });
   nullifier = disclose(nul);
+
+  coinBindingTag = disclose(transientHash<SplitCoinBindingPreimage>(
+    SplitCoinBindingPreimage {
+      sep: "midnight:zswap-split-coin[v1]" as Field,
+      coin: coin,
+      publicKey: pk,
+    }));
 }

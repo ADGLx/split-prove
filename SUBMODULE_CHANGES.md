@@ -24,12 +24,12 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 **Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](deps/midnight-ledger/zswap/src/verify.rs))
 - `Input<P, D>` and `Offer<P, D>` keep their original serialized wire shape (`zswap-input[v2]`, `zswap-offer[v5]`) so stock wallet/local-dev shielded transfers remain compatible with the patched node.
-- New `ZswapInputProof` / `SplitProofBundle` helpers encode/decode `spend-split`, `clientDerivationProof`, `sk_commitment`, `public_key`, and `coin_commitment` inside the proof bytes for split inputs.
-- Split inputs verify `CLIENT_DERIVATION_VK` against `sk_commitment`, `public_key`, `coin_commitment`, and `nullifier` before verifying `SPEND_SPLIT_VK`.
+- New `ZswapInputProof` / `SplitProofBundle` helpers encode/decode `spend-split`, `clientDerivationProof`, `public_key`, `coin_commitment`, and `coin_binding_tag` inside the proof bytes for split inputs.
+- Split inputs verify `CLIENT_DERIVATION_VK` against `public_key`, `nullifier`, and `coin_binding_tag` before verifying `SPEND_SPLIT_VK`.
 - Plain inputs still verify with the stock `SPEND_VK`; typed split envelopes take the split verifier path, and malformed split envelopes are rejected explicitly.
 
 **Circuit/artifact changes** ([deps/midnight-ledger/zswap/zswap-split.compact](deps/midnight-ledger/zswap/zswap-split.compact), [deps/midnight-ledger/zswap/static](deps/midnight-ledger/zswap/static))
-- `spendSplitUser` now accepts/discloses `coinCommitment` and asserts it equals the Merkle path leaf.
+- `spendSplitUser` now computes/discloses `coinCommitment = H(coin, pk)`, asserts it equals the Merkle path leaf, and discloses the same `coinBindingTag` as the client proof.
 - Regenerated `spend-split.{zkir,bzkir,prover,verifier}` and sha256 sidecars with the Compact compiler.
 - Mirrored the regenerated `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
 - Added [deps/midnight-ledger/zswap/static/client-derivation.verifier](deps/midnight-ledger/zswap/static/client-derivation.verifier), copied from the client-derivation circuit artifacts, so node/indexer binaries can verify the wallet proof without depending on proof-server paths.
@@ -60,7 +60,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 ### What changed, by area
 
 **New zswap split constructors and circuits** ([deps/midnight-ledger/zswap/src/construct.rs](deps/midnight-ledger/zswap/src/construct.rs), +149)
-- `AuthorizedClaim::new_split()` and `Input::new_split()` — accept pre-computed `(nullifier, pk, commitment, skCommitment)` instead of the raw secret key. The latest working-tree version keeps zswap input serialization stable; `Input::new_split()` returns a split context that carries `pk` and `clientDerivationProof` until proving encodes them into the proof envelope.
+- `AuthorizedClaim::new_split()` and `Input::new_split()` — accept pre-computed `(nullifier, pk, commitment, coinBindingTag)` instead of the raw secret key. The latest working-tree version keeps zswap input serialization stable; `Input::new_split()` returns a split context that carries `pk`, `coinBindingTag`, and `clientDerivationProof` until proving encodes them into the proof envelope.
 - New circuit source: [`zswap/zswap-split.compact`](deps/midnight-ledger/zswap/zswap-split.compact) (+41).
 - Compiled artifacts under [`zswap/static/`](deps/midnight-ledger/zswap/static/): `spend-split.{zkir,bzkir,prover,verifier}` and `sign-split.{zkir,bzkir,prover,verifier}` plus sha256 sidecars.
 - Mirrored zkir bytecode under [`zkir-precompiles/zswap/`](deps/midnight-ledger/zkir-precompiles/zswap/).

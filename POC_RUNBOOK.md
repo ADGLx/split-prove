@@ -21,17 +21,18 @@ wallet/client
     build Merkle state/path
 
   split-prove handoff:
-    prove sk -> skCommitment/nullifier/commitmentHash/pk
-    compute skCommitment
+    prove sk -> pk/nullifier/coinBindingTag
     compute nullifier
-    compute commitmentHash
+    read selected output commitmentHash
     package coin metadata + Merkle state/path
     POST /v2/prove-split-spend
 
 proof server
   reconstruct QualifiedCoinInfo
+  recompute commitmentHash = H(coin, pk) and reject mismatches
   load Merkle tree/path
   reject handoffs whose commitment does not reproduce the tree root
+  prove coinCommitment, Merkle membership, nullifier insertion, coinBindingTag, and value commitment
   call Input::new_split
   prove midnight/zswap/spend-split
   return proofHex + provedInputHex
@@ -48,14 +49,14 @@ movement is full split-send only: client derivation proof -> server split proof
 
 ### Interpreting Proof Timings
 
-Do not assume the server proof is always slower just because it owns the split-spend step. In the current generated artifacts, the wallet-side client-derivation circuit is larger:
+The wallet-side client-derivation circuit is intentionally smaller than the server split-spend circuit. Mock-compiling the shipped artifacts gives:
 
 | Circuit | k | rows | prover key |
 |---|---:|---:|---:|
-| `sk_prove` / client derivation | 14 | 14,601 | 5.21 MB |
-| `spend-split` / server split spend | 12 | 3,844 | 1.36 MB |
+| `sk_prove` / client derivation | 14 | 8,822 | 5.20 MB |
+| `spend-split` / server split spend | 14 | 9,756 | 5.74 MB |
 
-The client proof contains three `persistentHash` gadgets for `pk`, `coinCommitment`, and `nullifier`, plus the secret-key commitment. The server split proof has a 32-deep Merkle path and value commitment operations, but the compiled circuit is smaller. A small local chain can reduce scan/path-building time, but it is not the main reason the server `split-spend proving` bucket is shorter.
+The client proof now contains only the `sk`-dependent relations: `pk = H(sk)`, `nullifier = H(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. A small local chain can reduce scan/path-building time, but it does not change these circuit sizes.
 
 ## Important Files
 
@@ -228,7 +229,7 @@ Request shape:
 
 ```json
 {
-  "skCommitment": "<32-byte field hex>",
+  "coinBindingTag": "<32-byte field hex>",
   "nullifier": "<32-byte hex>",
   "pk": "<32-byte public key hex>",
   "commitmentHash": "<32-byte hex>",

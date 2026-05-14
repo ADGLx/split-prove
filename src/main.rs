@@ -1,7 +1,7 @@
 //! # Split-Prove Prototype: Pedersen Commitment Handoff
 //!
 //! End-to-end demonstration of split proving where:
-//!   - **Client** (lightweight): holds sk, computes nullifier/pk/commitment + sk commitment
+//!   - **Client**: holds sk, computes nullifier/pk/coin-binding tag
 //!   - **Server** (heavy): builds ProofPreimage using pre-computed values, proves without sk
 //!
 //! Uses the modified midnight-ledger circuits (new_split constructors) that accept
@@ -15,7 +15,6 @@ use midnight_coin_structure::coin::{
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::hash::transient_hash;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
@@ -31,9 +30,8 @@ use std::time::Instant;
 /// The server never sees the raw sk.
 #[derive(Debug, Clone)]
 pub struct ClientHandoff {
-    /// Pedersen commitment to sk: C = H(sk, r)
-    /// In production: C = sk·G + r·H on BLS12-381 G1
-    pub sk_commitment: Fr,
+    /// ZK-friendly tag binding client and server proofs to the same coin.
+    pub coin_binding_tag: Fr,
 
     /// Nullifier = H(sk, coin_info)
     pub nullifier: Nullifier,
@@ -77,14 +75,10 @@ pub fn client_prepare(
     // Compute coin commitment
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
 
-    // Commit to sk (hiding commitment — server can't extract sk)
-    let blinding: Fr = OsRng.r#gen();
-    let mut sk_fields = Vec::new();
-    sk.field_repr(&mut sk_fields);
-    let sk_commitment = transient_hash(&[sk_fields[0], blinding]);
+    let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
     ClientHandoff {
-        sk_commitment,
+        coin_binding_tag,
         nullifier,
         pk,
         commitment_hash,
@@ -108,8 +102,8 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
         None, // segment
         handoff.nullifier,
         handoff.commitment_hash,
-        handoff.sk_commitment,
         handoff.pk,
+        handoff.coin_binding_tag,
         Proof(Vec::new()),
         handoff.is_contract,
         tree,
@@ -126,7 +120,6 @@ pub fn server_build_sign_preimage(
         &mut OsRng,
         handoff.coin_info.clone(),
         handoff.pk,
-        handoff.sk_commitment,
     )
     .map_err(|e| format!("build sign preimage: {:?}", e))
 }
@@ -164,18 +157,15 @@ fn main() {
     let client_time = start.elapsed();
     println!("  Time:            {:?}", client_time);
     println!("  nullifier:       {}", hex::encode(handoff.nullifier.0 .0));
-    println!("  sk_commitment:   {:?}", handoff.sk_commitment);
+    println!("  coin_binding:    {:?}", handoff.coin_binding_tag);
     println!("  pk:              {:?}", handoff.pk);
 
     // ── Verify sk is NOT in the handoff ──
     let mut sk_fields = Vec::new();
     sk.field_repr(&mut sk_fields);
     let sk_fr = sk_fields[0];
-    assert_ne!(
-        handoff.sk_commitment, sk_fr,
-        "sk_commitment must NOT equal raw sk"
-    );
-    println!("  sk NOT exposed:  ✓ (commitment ≠ raw sk)");
+    assert_ne!(handoff.coin_binding_tag, sk_fr, "tag must NOT equal raw sk");
+    println!("  sk NOT exposed:  ✓ (tag ≠ raw sk)");
 
     // ── SERVER: build ProofPreimage WITHOUT sk ──
     println!("\n--- SERVER (prover) ---");
@@ -191,16 +181,15 @@ fn main() {
         spend_input.proof.public_transcript_inputs.len()
     );
 
-    // Verify that the proof preimage's inputs[0] is sk_commitment, NOT raw sk
-    assert_eq!(
-        spend_input.proof.inputs[0], handoff.sk_commitment,
-        "inputs[0] should be sk_commitment, not raw sk"
-    );
+    let mut pk_fields = Vec::new();
+    handoff.pk.field_repr(&mut pk_fields);
+    assert_eq!(spend_input.proof.inputs[0], pk_fields[0]);
+    assert_eq!(spend_input.proof.inputs[1], pk_fields[1]);
     assert_ne!(
         spend_input.proof.inputs[0], sk_fr,
         "inputs[0] must NOT be raw sk"
     );
-    println!("  inputs[0] = commitment (not sk): ✓");
+    println!("  inputs[0..2] = pk fields (not sk): ✓");
 
     // ── Build sign preimage too ──
     let start = Instant::now();
@@ -211,10 +200,10 @@ fn main() {
     println!("    key_location:  {}", sign_claim.proof.key_location.0);
     println!("    inputs count:  {}", sign_claim.proof.inputs.len());
     assert_eq!(
-        sign_claim.proof.inputs[0], handoff.sk_commitment,
-        "sign inputs[0] should be sk_commitment"
+        sign_claim.proof.inputs[0], pk_fields[0],
+        "sign inputs[0] should be first pk field"
     );
-    println!("    inputs[0] = commitment (not sk): ✓");
+    println!("    inputs[0] = pk field (not sk): ✓");
 
     // ── Compare with original (sk-exposing) flow ──
     println!("\n--- COMPARISON: original flow (exposes sk) ---");
@@ -238,12 +227,12 @@ fn main() {
         "original inputs[1] should be raw sk"
     );
     println!("  original inputs[1] = RAW SK: ✗ (exposed!)");
-    println!("  split    inputs[0] = COMMITMENT: ✓ (hidden!)");
+    println!("  split    inputs[0] = PUBLIC KEY FIELD: ✓ (not sk)");
 
     // ── Summary ──
     println!("\n=== Results ===");
     println!(
-        "  Client computation: {:?} (nullifier + pk + commitment)",
+        "  Client computation: {:?} (nullifier + pk + coin-binding tag)",
         client_time
     );
     println!(
@@ -253,13 +242,11 @@ fn main() {
     println!("  Server would then:  prove() → 2-10s (PLONK, no sk needed)");
     println!("\n  SECURITY:");
     println!("    Original: server sees sk in inputs[0] ✗");
-    println!("    Split:    server sees sk_commitment in inputs[0] ✓");
-    println!("    sk_commitment = H(sk, random) — cannot extract sk");
+    println!("    Split:    server sees pk/tag/nullifier, never raw sk ✓");
 
     println!("\n=== Production TODO ===");
     println!("  1. New circuit IR (.bzkir) for 'midnight/zswap/spend-split'");
-    println!("     that verifies sk_commitment against nullifier/pk via");
-    println!("     committed-instance column");
+    println!("     that verifies pk/nullifier/tag via clientDerivationProof");
     println!("  2. Add /v2/prove endpoint to api-gateway accepting ClientHandoff");
     println!("  3. Client SDK: client_prepare() → POST /v2/prove");
     println!("  4. Key generation for the new split circuits");

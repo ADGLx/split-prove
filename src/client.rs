@@ -18,7 +18,6 @@ use midnight_onchain_runtime::state::StateValue;
 use midnight_storage::arena::Sp;
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::hash::transient_hash;
 use midnight_transient_crypto::proofs::{
     KeyLocation, ParamsProver, ParamsProverProvider, Proof, ProofPreimage, ProvingKeyMaterial,
     Resolver,
@@ -33,8 +32,8 @@ use std::borrow::Cow;
 /// Contains all sk-dependent derived values but NOT the raw sk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientHandoff {
-    /// Commitment to sk: H(sk, blinding) — server can't extract sk.
-    pub sk_commitment: [u8; 32],
+    /// ZK-friendly tag binding the client proof and server split proof to the same coin.
+    pub coin_binding_tag: [u8; 32],
 
     /// Nullifier = H(sk, coin_info)
     pub nullifier: [u8; 32],
@@ -60,7 +59,7 @@ pub struct ClientHandoff {
     /// Whether this is a contract-owned coin (Some(address)) or user-owned (None)
     pub contract_address: Option<[u8; 32]>,
 
-    /// Serialized proof that binds sk to sk_commitment, pk, commitment_hash, and nullifier.
+    /// Serialized proof that binds sk to pk, nullifier, and coin_binding_tag.
     #[serde(default)]
     pub client_derivation_proof: Option<String>,
 }
@@ -122,7 +121,7 @@ pub fn client_prepare_with_blinding(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
     contract: Option<ContractAddress>,
-    blinding: Fr,
+    _blinding: Fr,
 ) -> ClientHandoff {
     let sender_evidence = if let Some(addr) = contract {
         SenderEvidence::Contract(addr)
@@ -140,8 +139,7 @@ pub fn client_prepare_with_blinding(
     // Compute coin commitment
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
 
-    // Commit to sk with the same field-aligned representation used by Compact.
-    let sk_commitment = compact_sk_commitment(sk, blinding);
+    let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
     // Serialize coin nonce
     let mut nonce_bytes = [0u8; 32];
@@ -152,7 +150,7 @@ pub fn client_prepare_with_blinding(
     let color_bytes = coin_info.type_.0 .0;
 
     ClientHandoff {
-        sk_commitment: sk_commitment
+        coin_binding_tag: coin_binding_tag
             .0
             .to_bytes_le()
             .try_into()
@@ -178,21 +176,14 @@ pub fn client_prepare_with_blinding(
     }
 }
 
-pub fn compact_sk_commitment(sk: &CoinSecretKey, blinding: Fr) -> Fr {
-    let mut sk_fields = Vec::new();
-    sk.0 .0.field_repr(&mut sk_fields);
-    transient_hash(&[sk_fields[0], sk_fields[1], blinding])
-}
-
 pub fn build_client_derivation_preimage(
     sk: &CoinSecretKey,
-    sk_blinding: Fr,
+    _sk_blinding: Fr,
     _coin: &QualifiedCoinInfo,
     handoff: &ClientHandoff,
 ) -> ProofPreimage {
     let mut inputs = Vec::new();
     sk.0 .0.field_repr(&mut inputs);
-    inputs.push(sk_blinding);
     handoff.coin_nonce.field_repr(&mut inputs);
     handoff.coin_color.field_repr(&mut inputs);
     inputs.push(Fr::from(handoff.coin_value));
@@ -229,33 +220,22 @@ pub fn client_derivation_proving_data() -> ProvingKeyMaterial {
 
 pub fn client_derivation_public_transcript_inputs(handoff: &ClientHandoff) -> Vec<Fr> {
     client_derivation_public_transcript_inputs_from_parts(
-        handoff_sk_commitment_fr(handoff),
         handoff_pk(handoff),
-        handoff.commitment_hash,
         handoff.nullifier,
+        handoff_coin_binding_tag_fr(handoff),
     )
 }
 
 pub fn client_derivation_public_transcript_inputs_from_parts(
-    sk_commitment: Fr,
     pk: CoinPublicKey,
-    commitment_hash: [u8; 32],
     nullifier: [u8; 32],
+    coin_binding_tag: Fr,
 ) -> Vec<Fr> {
     let mut inputs = Vec::new();
     extend_ops(
         &mut inputs,
         Cell_write!(
             [midnight_onchain_runtime::ops::Key::Value(0u8.into())],
-            false,
-            Fr,
-            sk_commitment
-        ),
-    );
-    extend_ops(
-        &mut inputs,
-        Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(1u8.into())],
             false,
             CoinPublicKey,
             pk
@@ -264,19 +244,19 @@ pub fn client_derivation_public_transcript_inputs_from_parts(
     extend_ops(
         &mut inputs,
         Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(2u8.into())],
+            [midnight_onchain_runtime::ops::Key::Value(1u8.into())],
             false,
             [u8; 32],
-            commitment_hash
+            nullifier
         ),
     );
     extend_ops(
         &mut inputs,
         Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(3u8.into())],
+            [midnight_onchain_runtime::ops::Key::Value(2u8.into())],
             false,
-            [u8; 32],
-            nullifier
+            Fr,
+            coin_binding_tag
         ),
     );
     inputs
@@ -292,9 +272,9 @@ fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, I
     }
 }
 
-/// Reconstruct the Fr commitment value from the handoff bytes.
-pub fn handoff_sk_commitment_fr(handoff: &ClientHandoff) -> Fr {
-    Fr::from_le_bytes(&handoff.sk_commitment).expect("valid Fr from commitment bytes")
+/// Reconstruct the Fr coin-binding tag from the handoff bytes.
+pub fn handoff_coin_binding_tag_fr(handoff: &ClientHandoff) -> Fr {
+    Fr::from_le_bytes(&handoff.coin_binding_tag).expect("valid Fr from coin binding tag bytes")
 }
 
 /// Reconstruct the Nullifier from the handoff bytes.
@@ -335,11 +315,8 @@ mod tests {
         assert!(!handoff.pk.iter().all(|&b| b == 0));
         // Commitment should be non-zero
         assert!(!handoff.commitment_hash.iter().all(|&b| b == 0));
-        // sk_commitment should NOT equal raw sk
-        let mut sk_fields = Vec::new();
-        sk.field_repr(&mut sk_fields);
-        let sk_bytes: [u8; 32] = sk_fields[0].0.to_bytes_le().try_into().unwrap();
-        assert_ne!(handoff.sk_commitment, sk_bytes, "commitment must hide sk");
+        // coin_binding_tag should be non-zero
+        assert!(!handoff.coin_binding_tag.iter().all(|&b| b == 0));
         // mt_index preserved
         assert_eq!(handoff.mt_index, 42);
     }
@@ -360,7 +337,7 @@ mod tests {
 
         assert_eq!(handoff.nullifier, deserialized.nullifier);
         assert_eq!(handoff.pk, deserialized.pk);
-        assert_eq!(handoff.sk_commitment, deserialized.sk_commitment);
+        assert_eq!(handoff.coin_binding_tag, deserialized.coin_binding_tag);
         assert_eq!(handoff.mt_index, deserialized.mt_index);
     }
 
@@ -423,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn different_blinding_produces_different_commitment() {
+    fn repeated_prepare_produces_stable_binding_values() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
         let coin = QualifiedCoinInfo {
             value: 100u64.into(),
@@ -438,7 +415,6 @@ mod tests {
         // Same sk → same nullifier and pk
         assert_eq!(h1.nullifier, h2.nullifier);
         assert_eq!(h1.pk, h2.pk);
-        // Different blinding → different commitment (probabilistic)
-        assert_ne!(h1.sk_commitment, h2.sk_commitment);
+        assert_eq!(h1.coin_binding_tag, h2.coin_binding_tag);
     }
 }

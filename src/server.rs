@@ -4,7 +4,7 @@
 //! and proves using `prove_split()` with committed instances.
 
 use crate::client::{
-    handoff_commitment, handoff_nullifier, handoff_pk, handoff_sk_commitment_fr, ClientHandoff,
+    handoff_coin_binding_tag_fr, handoff_commitment, handoff_nullifier, handoff_pk, ClientHandoff,
 };
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
@@ -19,7 +19,7 @@ use rand::rngs::OsRng;
 use std::fmt::Debug;
 
 /// Build a spend ProofPreimage from a ClientHandoff.
-/// The resulting ProofPreimage has sk_commitment in inputs[0] instead of raw sk.
+/// The resulting ProofPreimage has pk/coin data in its inputs, but never raw sk.
 pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
     handoff: &ClientHandoff,
     tree: &MerkleTree<A, D>,
@@ -43,8 +43,8 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         None, // segment
         handoff_nullifier(handoff),
         handoff_commitment(handoff),
-        handoff_sk_commitment_fr(handoff),
         handoff_pk(handoff),
+        handoff_coin_binding_tag_fr(handoff),
         client_derivation_proof,
         contract,
         tree,
@@ -64,15 +64,12 @@ pub fn build_sign_preimage(
         &mut OsRng,
         coin_info,
         handoff_pk(handoff),
-        handoff_sk_commitment_fr(handoff),
     )
     .map_err(|e| format!("build sign preimage: {:?}", e))
 }
 
-/// Number of field elements that sk occupies in the witness.
-/// For SenderEvidence::User: [discriminant=1, sk_hash_output_field]
-/// For the split path we put a single sk_commitment Fr.
-pub const SK_COMMITTED_FIELD_COUNT: usize = 1;
+/// Number of field elements that sk occupies in the split witness.
+pub const SK_COMMITTED_FIELD_COUNT: usize = 0;
 
 /// Reconstruct QualifiedCoinInfo from a ClientHandoff.
 fn reconstruct_coin(handoff: &ClientHandoff) -> Result<QualifiedCoinInfo, String> {
@@ -139,9 +136,11 @@ mod tests {
         );
 
         let input = input.unwrap();
-        // inputs[0] should be sk_commitment, not raw sk
-        let sk_com_fr = handoff_sk_commitment_fr(&handoff);
-        assert_eq!(input.proof.inputs[0], sk_com_fr);
+        let pk = handoff_pk(&handoff);
+        let mut pk_fields = Vec::new();
+        pk.field_repr(&mut pk_fields);
+        assert_eq!(input.proof.inputs[0], pk_fields[0]);
+        assert_eq!(input.proof.inputs[1], pk_fields[1]);
 
         // key_location should be spend-split
         assert_eq!(
@@ -154,7 +153,7 @@ mod tests {
     fn reconstruct_coin_preserves_token_type() {
         let token = ShieldedTokenType(HashOutput([7u8; 32]));
         let handoff = ClientHandoff {
-            sk_commitment: [1u8; 32],
+            coin_binding_tag: [1u8; 32],
             nullifier: [2u8; 32],
             pk: [3u8; 32],
             commitment_hash: [4u8; 32],
@@ -212,7 +211,10 @@ mod tests {
         );
 
         let claim = claim.unwrap();
-        assert_eq!(claim.proof.inputs[2], handoff_sk_commitment_fr(&handoff));
+        let pk = handoff_pk(&handoff);
+        let mut pk_fields = Vec::new();
+        pk.field_repr(&mut pk_fields);
+        assert_eq!(claim.proof.inputs, pk_fields);
     }
 
     #[test]
