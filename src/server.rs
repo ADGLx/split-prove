@@ -232,18 +232,16 @@ mod tests {
 
         let input = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree).unwrap();
 
-        // Extract raw sk field value
-        let mut sk_fields = Vec::new();
-        sk.field_repr(&mut sk_fields);
-        let raw_sk = sk_fields[0];
+        let mut sender_evidence_fields = Vec::new();
+        SenderEvidence::User(Cow::Borrowed(&sk)).field_repr(&mut sender_evidence_fields);
 
-        // Ensure raw sk is NOT anywhere in the inputs
-        for (i, inp) in input.proof.inputs.iter().enumerate() {
-            assert_ne!(
-                *inp, raw_sk,
-                "raw sk found in inputs[{}] — security violation!",
-                i
-            );
-        }
+        assert!(
+            !input
+                .proof
+                .inputs
+                .windows(sender_evidence_fields.len())
+                .any(|window| window == sender_evidence_fields.as_slice()),
+            "split spend witness must not contain raw user sender evidence"
+        );
     }
 }

@@ -14,16 +14,17 @@ struct PublicKeyPreimage {
   secretKey: ZswapCoinSecretKey,
 }
 
-struct NullifierZkfPreimage {
-  sep: Field,
-  coin: ShieldedCoinInfo,
-  secretKey: ZswapCoinSecretKey,
-}
-
 struct SplitCoinBindingPreimage {
   sep: Field,
   coin: ShieldedCoinInfo,
   publicKey: ZswapCoinPublicKey,
+}
+
+struct CoinPreimage {
+  sep: Bytes<21>,
+  info: ShieldedCoinInfo,
+  dataType: Boolean,
+  data: Bytes<32>,
 }
 
 // Public outputs: pk, nullifier, coinBindingTag.
@@ -44,15 +45,15 @@ export circuit sk_prove(
   };
   publicKey = disclose(pk);
 
-  // Compute nullifier with ZK-friendly Poseidon hash. The disclosed type
-  // stays Bytes<32> so the node's nullifier set (`Set<Bytes<32>>`) is
-  // untouched; upgradeFromTransient zero-pads the Field into 32 bytes.
-  const nul = upgradeFromTransient(transientHash<NullifierZkfPreimage>(
-    NullifierZkfPreimage {
-      sep: "midnight:split-nul[v1]" as Field,
-      coin: coin,
-      secretKey: sk,
-    }));
+  // Match the canonical Zswap nullifier exactly so split and non-split spends
+  // collide in the same ledger nullifier set.
+  const nul = persistentHash<CoinPreimage>(
+    CoinPreimage {
+      sep: "midnight:zswap-cn[v1]",
+      info: coin,
+      dataType: true,
+      data: sk.bytes,
+    });
   nullifier = disclose(nul);
 
   coinBindingTag = disclose(transientHash<SplitCoinBindingPreimage>(

@@ -21,6 +21,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 - Final split zswap inputs now carry both the server-generated `spend-split` proof and the wallet-generated `clientDerivationProof` inside a typed envelope encoded in the opaque zswap `Proof(Vec<u8>)`.
 - The rebuilt node verifies both proofs during normal zswap `well_formed()` checks and reconstructs the shared public statement from the split proof envelope.
 - The proof server still pre-verifies `clientDerivationProof` for fast rejection, but it is no longer trusted for split admission. Bypassing the proof server no longer lets an attacker submit a valid `spend-split` proof with arbitrary `pk` / `nullifier` linkage.
+- The client derivation circuit now proves the canonical Zswap nullifier (`midnight:zswap-cn[v1]`), not a split-only nullifier domain, so a stock spend and a split spend of the same coin collide in the ledger nullifier set.
 
 **Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](deps/midnight-ledger/zswap/src/verify.rs))
 - `Input<P, D>` and `Offer<P, D>` keep their original serialized wire shape (`zswap-input[v2]`, `zswap-offer[v5]`) so stock wallet/local-dev shielded transfers remain compatible with the patched node.
@@ -32,7 +33,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 - `spendSplitUser` now computes/discloses `coinCommitment = H(coin, pk)`, asserts it equals the Merkle path leaf, and discloses the same `coinBindingTag` as the client proof.
 - Regenerated `spend-split.{zkir,bzkir,prover,verifier}` and sha256 sidecars with the Compact compiler.
 - Mirrored the regenerated `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
-- Added [deps/midnight-ledger/zswap/static/client-derivation.verifier](deps/midnight-ledger/zswap/static/client-derivation.verifier), copied from the client-derivation circuit artifacts, so node/indexer binaries can verify the wallet proof without depending on proof-server paths.
+- Added [deps/midnight-ledger/zswap/static/client-derivation.verifier](deps/midnight-ledger/zswap/static/client-derivation.verifier), copied from the client-derivation circuit artifacts, so node/indexer binaries can verify the wallet proof without depending on proof-server paths. Regenerate this verifier whenever [circuits/sk_proof.compact](circuits/sk_proof.compact) changes.
 - Artifacts are regenerated with the local Compact CLI, for example:
   ```bash
   compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile

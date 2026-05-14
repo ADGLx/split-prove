@@ -56,7 +56,7 @@ The wallet-side client-derivation circuit is intentionally smaller than the serv
 | `sk_prove` / client derivation | 14 | 8,822 | 5.20 MB |
 | `spend-split` / server split spend | 14 | 9,756 | 5.74 MB |
 
-The client proof now contains only the `sk`-dependent relations: `pk = H(sk)`, `nullifier = H(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. A small local chain can reduce scan/path-building time, but it does not change these circuit sizes.
+The client proof now contains only the `sk`-dependent relations: `pk = H_persistent(sk)`, canonical `nullifier = H_persistent(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The e2e report treats these two proof durations as the primary split-prove comparison and separates out scan, handoff overhead, output proving, Dust balancing, and submit time because those are full transaction workflow costs. A small local chain can reduce scan/path-building time, but it does not change these circuit sizes.
 
 ## Important Files
 
@@ -115,19 +115,23 @@ recovery phrase so the helper can derive the matching Dust and unshielded keys.
 The standalone Midnight local-dev network is vendored into this repo under
 `deps/midnight-local-dev`. It stays as its own npm package.
 
+Install its dependencies once:
+
 ```bash
-cd deps/midnight-local-dev
-npm install
-MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> npm start
+make local-install
 ```
 
-If the proof-server image also needs to come from this PoC, provide both image
-overrides:
-
 ```bash
-MIDNIGHT_NODE_IMAGE=<rebuilt-node-image> \
-MIDNIGHT_PROOF_SERVER_IMAGE=<split-proof-server-image> \
-npm start
+make local-nodes
+```
+
+The Makefile loads the root `.env` before starting local-dev. Put image
+overrides there when needed:
+
+```dotenv
+MIDNIGHT_NODE_IMAGE=midnight-node:split-prove
+MIDNIGHT_INDEXER_IMAGE=split-prove/indexer-standalone:local
+MIDNIGHT_PROOF_SERVER_IMAGE=<split-proof-server-image>
 ```
 
 The local chain uses `network_id=undeployed` and exposes `9944`, `8088`, and
@@ -141,17 +145,17 @@ against `deps/midnight-ledger` so its Zswap verifier matches the rebuilt node.
 Build it once with:
 
 ```bash
-docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+make rebuild-images
 ```
 
 The indexer source lives at `deps/midnight-indexer` (submodule pointing at
 `ADGLx/midnight-indexer`, branch `feature/split-prove-indexer-4.0.1`). Re-run
-the docker build after any change to that submodule or to
+`make rebuild-images` after any change to that submodule or to
 `deps/midnight-ledger`. To run against the stock 4.0.1 image instead (which
 will crash on the split-send block), override:
 
-```bash
-MIDNIGHT_INDEXER_IMAGE=midnightntwrk/indexer-standalone:4.0.1 npm start
+```dotenv
+MIDNIGHT_INDEXER_IMAGE=midnightntwrk/indexer-standalone:4.0.1
 ```
 
 ## Run The Preview PoC
@@ -172,7 +176,7 @@ cargo run --offline -p midnight-proof-server --bin preview-split-prove \
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=1622 input_value=50000000000 transfer_value=500000000 change_value=49500000000 token=<token-type> recipient=<shielded-address> status=proofBuilt proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
+split-sent preview output key_index=0 mt_index=1622 input_value=50000000000 transfer_value=500000000 change_value=49500000000 token=<token-type> recipient=<shielded-address> status=proofBuilt client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
 ```
 
 By default the command starts a local proof server on a random port. To use an already running proof server:

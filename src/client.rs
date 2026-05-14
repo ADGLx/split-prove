@@ -18,7 +18,6 @@ use midnight_onchain_runtime::state::StateValue;
 use midnight_storage::arena::Sp;
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::hash::{transient_hash, upgrade_from_transient};
 use midnight_transient_crypto::proofs::{
     KeyLocation, ParamsProver, ParamsProverProvider, Proof, ProofPreimage, ProvingKeyMaterial,
     Resolver,
@@ -133,8 +132,8 @@ pub fn client_prepare_with_blinding(
     // Derive pk
     let pk = sk.public_key();
 
-    // Compute nullifier with the split-only Poseidon scheme; mirrors the
-    // `NullifierZkfPreimage` struct in circuits/sk_proof.compact.
+    // Compute the canonical Zswap nullifier so split and non-split spends
+    // collide in the same ledger nullifier set.
     let coin_info = CoinInfo::from(coin);
     let nullifier = split_nullifier(&coin_info, sk);
 
@@ -178,23 +177,10 @@ pub fn client_prepare_with_blinding(
     }
 }
 
-// Domain tag for the split-only Poseidon nullifier. Must encode bit-identically
-// to `"midnight:split-nul[v1]" as Field` in circuits/sk_proof.compact: ASCII
-// bytes placed at the start of a 32-byte little-endian field element.
-fn split_nul_domain() -> Fr {
-    let domain = b"midnight:split-nul[v1]";
-    let mut bytes = [0u8; 32];
-    bytes[..domain.len()].copy_from_slice(domain);
-    Fr::from_le_bytes(&bytes).expect("split nullifier domain fits in Fr")
-}
-
-/// Compute the split-only nullifier off-circuit. Must produce the same
-/// 32 bytes that the `sk_prove` circuit discloses.
+/// Compute the canonical Zswap nullifier off-circuit. Must produce the same
+/// 32 bytes that both the stock Zswap spend circuit and `sk_prove` disclose.
 pub fn split_nullifier(coin: &CoinInfo, sk: &CoinSecretKey) -> Nullifier {
-    let mut inputs = vec![split_nul_domain()];
-    coin.field_repr(&mut inputs);
-    sk.field_repr(&mut inputs);
-    Nullifier(upgrade_from_transient(transient_hash(&inputs)))
+    coin.nullifier(&SenderEvidence::User(Cow::Borrowed(sk)))
 }
 
 pub fn build_client_derivation_preimage(
@@ -375,6 +361,23 @@ mod tests {
         let handoff = client_prepare(&sk, &coin, None);
 
         assert_eq!(handoff.coin_color, coin.type_.0 .0);
+    }
+
+    #[test]
+    fn split_nullifier_matches_canonical_user_nullifier() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 500u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let coin_info = CoinInfo::from(&coin);
+
+        assert_eq!(
+            split_nullifier(&coin_info, &sk),
+            coin_info.nullifier(&SenderEvidence::User(Cow::Borrowed(&sk)))
+        );
     }
 
     #[test]

@@ -15,7 +15,6 @@ use midnight_coin_structure::coin::{
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::hash::{transient_hash, upgrade_from_transient};
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
@@ -69,8 +68,8 @@ pub fn client_prepare(
     // Derive pk
     let pk = sk.public_key();
 
-    // Compute split-only Poseidon nullifier; mirrors NullifierZkfPreimage in
-    // circuits/sk_proof.compact.
+    // Compute the canonical Zswap nullifier so split and non-split spends
+    // collide in the same ledger nullifier set.
     let coin_info = CoinInfo::from(coin);
     let nullifier = split_nullifier(&coin_info, sk);
 
@@ -90,18 +89,8 @@ pub fn client_prepare(
     }
 }
 
-fn split_nul_domain() -> Fr {
-    let domain = b"midnight:split-nul[v1]";
-    let mut bytes = [0u8; 32];
-    bytes[..domain.len()].copy_from_slice(domain);
-    Fr::from_le_bytes(&bytes).expect("split nullifier domain fits in Fr")
-}
-
 fn split_nullifier(coin: &CoinInfo, sk: &CoinSecretKey) -> Nullifier {
-    let mut inputs = vec![split_nul_domain()];
-    coin.field_repr(&mut inputs);
-    sk.field_repr(&mut inputs);
-    Nullifier(upgrade_from_transient(transient_hash(&inputs)))
+    coin.nullifier(&SenderEvidence::User(Cow::Borrowed(sk)))
 }
 
 // ─── Server Side ────────────────────────────────────────────────────────────

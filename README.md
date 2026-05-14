@@ -22,21 +22,16 @@ The PoC can prove a real unspent shielded output, assemble a sealed split-send t
 | [deps/midnight-node](deps/midnight-node) | `feature/split-prove-node-0.22.3` | Stock v0.22.3 node, rebuilt against the patched ledger so it accepts split-send blocks. |
 | [deps/midnight-local-dev](deps/midnight-local-dev) | — | Docker-compose orchestrator for node + indexer + proof-server. Option 6 funds the e2e wallet. |
 
-### Where `midnight-ledger` is consumed (the confusing part)
+### Where `midnight-ledger` is consumed
 
-The ledger submodule is used by **both** the proof side and the verification side, which must stay in lockstep:
+Used by **both** proving and verification — they must stay in lockstep:
 
-- **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs) has the synthetic no-chain split test and the opt-in live full-tx test against the local-dev chain. Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs` (name is historical — it targets local-dev).
-- **Indexer Docker build** — [Dockerfile.indexer:18](Dockerfile.indexer#L18) copies `deps/midnight-ledger` into the build context; the indexer's `[patch.crates-io]` redirects ledger crates to this local checkout. Without it, the stock indexer crashes on a split-send block with `Invalid proof — while verifying Zswap proof`.
-- **Node Docker build** — `deps/midnight-node` on its split-prove branch already pins the matching ledger; built once and passed to local-dev via `MIDNIGHT_NODE_IMAGE`.
-- **Circuit compilation** — the current split-prove artifacts are generated with the local Compact CLI, not by hand-editing zkir. The direct commands are:
-  ```bash
-  compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
-  compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
-  ```
-  The generated `.zkir`, `.bzkir`, `.prover`, and `.verifier` files are then copied into `circuits/static/client-derivation/` and `deps/midnight-ledger/zswap/static/`, with `spendSplitUser.zkir` mirrored into `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+- **E2E tests / proof server** — integration tests live in the submodule: [deps/midnight-ledger/proof-server/tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs) (synthetic + live full-tx).
+- **Indexer Docker build** — [Dockerfile.indexer](Dockerfile.indexer) copies this submodule and `[patch.crates-io]`s the ledger crates to it; without it the stock indexer crashes on split-send blocks.
+- **Node Docker build** — `deps/midnight-node`'s split-prove branch already pins the matching ledger; pass the built image via `MIDNIGHT_NODE_IMAGE`.
+- **Circuit compilation** — regenerated with the local Compact CLI; see [POC_RUNBOOK.md](POC_RUNBOOK.md) for the exact commands.
 
-If you rebuild only one side, blocks get rejected. All three pinned branches must move together.
+Rebuild only one side and blocks get rejected.
 
 ## End-to-End Flow
 
@@ -57,74 +52,73 @@ That's the headline demo — runs the live split-send against the local chain wi
 
 ### One-time setup
 
-1. `npm install` at the repo root, then `cp .env.example .env` (shipped values are throwaway and target the bundled `undeployed` chain).
+1. Install JS dependencies and create the local env file:
+   ```bash
+   npm install
+   make local-install
+   cp .env.example .env
+   ```
 2. Build the rebuilt node + indexer images (only when the ledger submodule moves):
    ```bash
-   docker build -f deps/midnight-node/Dockerfile.split-prove -t midnight-node:split-prove-0.22.3 .
-   docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+   make rebuild-images
    ```
 3. In another terminal, start the local chain and fund the wallet with **option 6**:
    ```bash
-   cd deps/midnight-local-dev && npm install
-   MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 \
-   MIDNIGHT_INDEXER_IMAGE=split-prove/indexer-standalone:local npm start
+   make local-nodes
    ```
+   The Makefile loads `.env` before running local-dev. Use `make local-env` to
+   check the resolved image tags.
 
-### What you'll see
+## Original vs Split Proving
 
-Per-stage `tracing` events during the run, then a final banner:
+In stock Zswap, one spend proof covers the whole spend relation. If proving is outsourced, the proof server receives a `midnight/zswap/spend` preimage whose private witness includes the sender evidence for the coin, so the server must be local or trusted.
 
-```
---- CLIENT (wallet, local) ---
-  [1/6] scan       events replayed, coin selected            ...
-  [2/6] derive     client-derivation proof built             ...
-         └─ of which local proving                           ...
-  [5/6] assemble+  recipient output, dust balance, submit    ...
+Split-prove divides that work into two linked proofs:
 
---- SERVER (proof-server, remote) ---
-  [3/6] handoff    POST /v2/prove-split-spend                ... total
-         ├─ network (round-trip overhead)                    ...
-         ├─ server: verify client derivation proof           ...
-         └─ server: split-spend proving                      ...
+| Area | Original Zswap Spend | Split-Prove PoC |
+|---|---|---|
+| Wallet role | Builds one spend proof preimage with `sk`-bearing sender evidence | Proves only `sk -> pk/nullifier/coinBindingTag` locally |
+| Server role | Proves `midnight/zswap/spend` from the full private witness | Proves `midnight/zswap/spend-split` from public handoff values and Merkle data |
+| Secret-key exposure | Remote proof server can receive the spend witness | Raw `sk` never crosses the handoff boundary |
+| Node verification | Verifies one stock Zswap spend proof | Verifies the client-derivation proof and the split-spend proof |
+| Compatibility cost | Works with stock node/indexer | Requires rebuilt ledger, node, and indexer with split proof admission |
 
---- NODE + INDEXER ---
-  [6/6] submit     inclusion_status=inBlock|finalized  block_hash=0x...
-
---- Local vs remote proving ---
-  client local proving (derive):                             ...
-  server remote proving (split-spend):                       ...
-  total wall-clock (stages 1–6):                             ...
-
---- Role boundary check ---
-  sk crossed the wire?  NO
-  what crossed (ClientHandoff): coinBindingTag, nullifier, pk,
-    commitmentHash, coinValue, coinType, coinNonce, mtIndex,
-    contractAddress, clientDerivationProof
-```
-
-The three role headers map onto the six stages in [End-to-End Flow](#end-to-end-flow), making the split-prove boundary visible. The **role boundary check** statically enumerates the `ClientHandoff` fields — the point of split-prove is that no `sk` field appears here.
+The `coinBindingTag` links both proofs to the same coin and public key. The canonical Zswap nullifier is still used, so a split spend and a stock spend of the same coin collide in the same ledger nullifier set.
 
 ### Proof Cost Note
 
-The server owns the split-spend proof. The wallet-side client-derivation circuit now avoids the canonical coin commitment and only proves the `sk`-dependent relations. Mock-compiling the shipped artifacts gives:
+The server owns the split-spend proof. The wallet-side client-derivation circuit only proves the `sk`-dependent relations and uses the canonical Zswap nullifier so split and non-split spends collide in the same ledger nullifier set.
 
-| Circuit | Location | k | rows | prover key |
-|---|---|---:|---:|---:|
-| `sk_prove` | `circuits/static/client-derivation/` | 14 | 8,822 | 5.20 MB |
-| `spend-split` | `deps/midnight-ledger/zswap/static/` | 14 | 9,756 | 5.74 MB |
+| Circuit | Location | prover key |
+|---|---|---:|
+| `sk_prove` | `circuits/static/client-derivation/` | 5.20 MB |
+| `spend-split` | `deps/midnight-ledger/zswap/static/` | 5.74 MB |
 
-This is the intended split for the PoC: the wallet proves `pk = H(sk)`, `nullifier = H(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server proves `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, discloses the same `coinBindingTag`, inserts the public nullifier, and proves the value commitment. Runtime can still vary by machine and prover implementation, but the compiled row counts now put the heavier circuit on the server side.
+The wallet proves `pk = H_persistent(sk)`, `nullifier = H_persistent(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server proves `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, discloses the same `coinBindingTag`, inserts the public nullifier, and proves the value commitment. `pk`, `nullifier`, and `coinCommitment` stay canonical so stock-wallet funding outputs and stock spend nullifiers remain compatible with split proving.
 
-### Troubleshooting
+### Recent Live E2E Result
 
-- Funding fails with `Custom error: 1` + node logs show `Unrecognised discriminant`: node image out of sync with the ledger submodule. Rebuild images, `npm run clean` in `deps/midnight-local-dev`, restart.
-- `make e2e` fails at submit with `Custom error: 185` + `PedersenCheckFailure`: binding-randomness / sealed-tx assembly in the preview client, not proof verification. No docker rebuild — just rerun.
+Run: `make e2e` against the bundled local chain (12 workers, debug build). Rerun this after rebuilding the proof-server/node/indexer images whenever the circuit artifacts change.
+
+| Stage | Role | Wall-clock |
+|---|---|---:|
+| [1/6] scan | client | 300 ms |
+| [2/6] derive (of which local proving) | client | 949 ms (938 ms) |
+| [3/6] handoff (network + verify + server prove) | client → server | 1982 ms (15 + 19 + 1917) |
+| [5/6] assemble + Dust balance + submit | client → node | 8835 ms |
+| [6/6] independent on-chain verify | node | 59 ms |
+| **Total wall-clock** | | **12068 ms** |
+
+- Client local proving **938 ms** vs server split-spend **1917 ms** → server/client ratio **2.04×**.
+- Split-prove proof-only total: **2855 ms**. Use that, not the full demo wall-clock, when comparing local wallet proof work to remote split proof work.
+- The 8835 ms `assemble+` block is wallet-SDK Dust balancing and raw-RPC submit — baseline wallet transaction work, not split-prove proving overhead.
+- `inclusion_status=inBlock`, `block_hash=0xcbc5af250f...8c2b1659`. No `sk` field appears in the `ClientHandoff` that crosses the wire.
 
 See [POC_RUNBOOK.md](POC_RUNBOOK.md) for env vars, endpoint shapes, and tuning knobs.
 
 ## Split Proof Admission
 
-The `spend-split` circuit verifies Merkle membership and structural consistency of `pk` / `nullifier` / `commitmentHash` / `coinBindingTag`, but — by design, since the whole point is to remove `sk` from the server — it does **not** check `nullifier = H(sk, coin)` or `pk = derive(sk)`. The `clientDerivationProof` is what attests to that link.
+The `spend-split` circuit verifies Merkle membership and structural consistency of `pk` / `nullifier` / `commitmentHash` / `coinBindingTag`, but — by design, since the whole point is to remove `sk` from the server — it does **not** check `nullifier = H_persistent(coin, sk)` or `pk = derive(sk)`. The `clientDerivationProof` is what attests to that link.
 
 The final ledger-verified split input now carries both proofs:
 
