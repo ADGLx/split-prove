@@ -11,6 +11,7 @@ ledger merkleTree: HistoricMerkleTree<32, Bytes<32>>;
 ledger nullifiers: Set<Bytes<32>>;
 ledger valueCom: JubjubPoint;
 ledger contractAddr: ContractAddress;
+ledger coinCommitment: Bytes<32>;
 ledger segment: Uint<16>;
 
 export circuit spend_no_sk(
@@ -23,6 +24,7 @@ export circuit spend_no_sk(
   // Verify the coin commitment is in the merkle tree
   merkleTree.checkRoot(disclose(merkleTreePathRootNoLeafHash<32>(path)));
   assert(coinCom == path.leaf, "Path must be to coin commitment");
+  coinCommitment = disclose(coinCom);
 
   // Insert nullifier (prevents double-spend)
   nullifiers.insert(disclose(nul));

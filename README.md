@@ -38,9 +38,9 @@ If you rebuild only one side, blocks get rejected. All three pinned branches mus
 1. **Fund** — `midnight-local-dev` option 6 (`deps/midnight-local-dev/src/funding.ts`) sends a shielded NIGHT output to the split-prove wallet and polls the indexer until it appears.
 2. **Derive (client)** — `preview-split-prove` reads the unspent output, derives `skCommitment` / `nullifier` / `commitmentHash` locally, and proves the **client-derivation circuit**.
 3. **Handoff** — POST to `/v2/prove-split-spend` ([deps/midnight-ledger/proof-server/src/endpoints.rs](deps/midnight-ledger/proof-server/src/endpoints.rs)).
-4. **Split proof (server)** — server verifies the client-derivation proof, calls `Input::new_split` ([deps/midnight-ledger/zswap/src/construct.rs](deps/midnight-ledger/zswap/src/construct.rs)) and proves `midnight/zswap/spend-split` using artifacts in `deps/midnight-ledger/zswap/static/`.
+4. **Split proof (server)** — server pre-verifies the client-derivation proof, calls `Input::new_split` ([deps/midnight-ledger/zswap/src/construct.rs](deps/midnight-ledger/zswap/src/construct.rs)) and proves `midnight/zswap/spend-split` using artifacts in `deps/midnight-ledger/zswap/static/`.
 5. **Assemble (client)** — verifies the returned `Input<Proof>` locally, proves a recipient shielded output, and Dust-balances + finalizes via the wallet SDK bridge ([tools/preview_balance_submit_split_tx.mjs](tools/preview_balance_submit_split_tx.mjs)).
-6. **Submit + replay** — finalized tx sent to the rebuilt node via `author_submitAndWatchExtrinsic`; the rebuilt indexer replays the block and indexes the new output.
+6. **Submit + replay** — finalized tx sent to the rebuilt node via `author_submitAndWatchExtrinsic`; the node verifies both the client-derivation proof and the split-spend proof, then the rebuilt indexer replays the block and indexes the new output.
 
 ## Running the E2E
 
@@ -68,10 +68,14 @@ docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
 ```bash
 cd deps/midnight-local-dev
 npm install
-MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 npm start
+MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 \
+MIDNIGHT_INDEXER_IMAGE=split-prove/indexer-standalone:local \
+npm start
 ```
 
 Exposes node `127.0.0.1:9944`, indexer `:8088`, proof server `:6300`. In the CLI, pick **option 6** to fund the split-prove wallet (the address from `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` in `.env`).
+
+If option 6 fails during the shielded funding transfer with `Invalid Transaction: Custom error: 1`, check `docker logs midnight-node`. `Error deserializing ... Unrecognised discriminant` means the running node image is out of sync with this checkout. Rebuild the node/indexer images above, stop the local-dev stack, run `npm run clean` from `deps/midnight-local-dev`, and restart with the explicit image env vars.
 
 ### Run the live e2e (full split-send tx against the local chain)
 
@@ -102,16 +106,17 @@ cargo test --offline -p midnight-proof-server synthetic_client_derivation_proof_
 
 See [POC_RUNBOOK.md](POC_RUNBOOK.md) for environment variables, endpoint shapes, and tuning knobs.
 
-## Known Shortcoming: Trusted Admission Gate
+## Split Proof Admission
 
 The `spend-split` circuit verifies Merkle membership and structural consistency of `pk` / `nullifier` / `commitmentHash`, but — by design, since the whole point is to remove `sk` from the server — it does **not** check `nullifier = H(sk, coin)` or `pk = derive(sk)`. The `clientDerivationProof` is what attests to that link.
 
-In this PoC the proof server verifies `clientDerivationProof` off-chain before generating the split spend proof, but the final ledger-verified artifact does **not** recursively verify or aggregate the client proof. An attacker who bypasses the proof server and proves `spend-split` directly with arbitrary `pk` / `nullifier` against any public commitment can have the ledger accept it — effectively stealing the coin's value to a `pk` they control. The real owner's later spend would still succeed (their nullifier differs), but the value is already gone.
+The final ledger-verified split input now carries both proofs:
 
-This means the proof server is currently in the trusted computing base. Production fixes (any of):
+- `clientDerivationProof`, proving the wallet knows `sk` and that `skCommitment`, `pk`, `commitmentHash`, and `nullifier` were derived from that key and coin.
+- `spend-split`, proving the committed coin is in the Merkle tree, the declared nullifier is inserted, and the value commitment/spend rules are valid.
 
-- Recursively verify `clientDerivationProof` inside `spend-split`.
-- Aggregate the client and spend proofs into one ledger-submitted artifact.
-- Bind the client proof's public outputs into `spend-split` public inputs so the ledger verifier checks both at submit time.
+The zswap split proving path encodes `spend-split`, `clientDerivationProof`, and the shared public inputs into a typed envelope stored in the opaque zswap proof bytes. That keeps `zswap-input[v2]` / `zswap-offer[v5]` wire-compatible with the stock local-dev wallet SDK, so ordinary shielded funding transfers still decode on the patched node.
 
-Until one of these lands, "split proving" here means "split proving gated by a trusted admission server".
+The node verifies both proofs at submit time and reconstructs the shared public inputs from the encoded split proof envelope. The proof server still pre-verifies `clientDerivationProof` for fast failure, but it is no longer in the trusted computing base for split admission.
+
+This only holds when the node and indexer are rebuilt against this patched ledger. Stock preview nodes still reject split-send blocks because they do not have these ledger changes.

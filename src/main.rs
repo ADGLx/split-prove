@@ -17,7 +17,7 @@ use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
 use midnight_transient_crypto::hash::transient_hash;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
-use midnight_transient_crypto::proofs::ProofPreimage;
+use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
 use midnight_zswap::{AuthorizedClaim, Input};
 use rand::rngs::OsRng;
@@ -109,9 +109,12 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
         handoff.nullifier,
         handoff.commitment_hash,
         handoff.sk_commitment,
+        handoff.pk,
+        Proof(Vec::new()),
         handoff.is_contract,
         tree,
     )
+    .map(|split_input| split_input.into_preimage())
     .map_err(|e| format!("build spend preimage: {:?}", e))
 }
 
@@ -147,8 +150,7 @@ fn main() {
     let coin_info = CoinInfo::from(&coin);
     let commitment = coin_info.commitment(&Recipient::from(sender_evidence));
     let tree = MerkleTree::<(), InMemoryDB>::blank(32)
-        .try_update_hash(0, commitment.0, ())
-        .expect("valid tree index")
+        .update_hash(0, commitment.0, ())
         .rehash();
 
     println!("Setup:");

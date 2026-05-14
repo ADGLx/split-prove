@@ -13,7 +13,7 @@ use midnight_coin_structure::contract::ContractAddress;
 use midnight_storage::db::DB;
 use midnight_storage::Storable;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
-use midnight_transient_crypto::proofs::ProofPreimage;
+use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_zswap::{AuthorizedClaim, Input};
 use rand::rngs::OsRng;
 use std::fmt::Debug;
@@ -28,6 +28,14 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
     let contract = handoff
         .contract_address
         .map(|a| ContractAddress(HashOutput(a)));
+    let client_derivation_proof = handoff
+        .client_derivation_proof
+        .as_deref()
+        .map(hex::decode)
+        .transpose()
+        .map_err(|e| format!("decode client derivation proof: {e}"))?
+        .map(Proof)
+        .ok_or("client derivation proof is required for split spend preimages")?;
 
     Input::new_split(
         &mut OsRng,
@@ -36,9 +44,12 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         handoff_nullifier(handoff),
         handoff_commitment(handoff),
         handoff_sk_commitment_fr(handoff),
+        handoff_pk(handoff),
+        client_derivation_proof,
         contract,
         tree,
     )
+    .map(|split_input| split_input.into_preimage())
     .map_err(|e| format!("build spend preimage: {:?}", e))
 }
 
@@ -99,9 +110,12 @@ mod tests {
         let coin_info = CoinInfo::from(coin);
         let commitment = coin_info.commitment(&Recipient::from(sender_evidence));
         MerkleTree::<(), InMemoryDB>::blank(32)
-            .try_update_hash(0, commitment.0, ())
-            .expect("valid tree index")
+            .update_hash(0, commitment.0, ())
             .rehash()
+    }
+
+    fn attach_dummy_client_proof(handoff: &mut ClientHandoff) {
+        handoff.client_derivation_proof = Some(hex::encode([]));
     }
 
     #[test]
@@ -114,7 +128,8 @@ mod tests {
             mt_index: 0,
         };
         let tree = setup_tree(&sk, &coin);
-        let handoff = client_prepare(&sk, &coin, None);
+        let mut handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
 
         let input = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree);
         assert!(
@@ -167,6 +182,7 @@ mod tests {
         };
         let tree = setup_tree(&sk, &coin);
         let mut handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
         handoff.commitment_hash[0] ^= 1;
 
         let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
@@ -209,7 +225,8 @@ mod tests {
             mt_index: 0,
         };
         let tree = setup_tree(&sk, &coin);
-        let handoff = client_prepare(&sk, &coin, None);
+        let mut handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
 
         let input = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree).unwrap();
 

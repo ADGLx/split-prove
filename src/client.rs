@@ -315,7 +315,6 @@ pub fn handoff_commitment(handoff: &ClientHandoff) -> Commitment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midnight_transient_crypto::proofs::Zkir;
     use std::io::Cursor;
 
     #[test]
@@ -392,9 +391,9 @@ mod tests {
         };
         let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
         let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
-        let ir = midnight_zkir::IrSource::load_ir_from_tagged(Cursor::new(include_bytes!(
-            "../circuits/static/client-derivation/sk_prove.bzkir"
-        )))
+        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
+            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
+        ))
         .expect("client derivation IR should load");
 
         preimage
@@ -415,9 +414,9 @@ mod tests {
         let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
         handoff.nullifier[0] ^= 1;
         let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
-        let ir = midnight_zkir::IrSource::load_ir_from_tagged(Cursor::new(include_bytes!(
-            "../circuits/static/client-derivation/sk_prove.bzkir"
-        )))
+        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
+            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
+        ))
         .expect("client derivation IR should load");
 
         assert!(preimage.check(&ir).is_err());
