@@ -26,7 +26,7 @@ The PoC can prove a real unspent shielded output, assemble a sealed split-send t
 
 The ledger submodule is used by **both** the proof side and the verification side, which must stay in lockstep:
 
-- **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs:547](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L547) (synthetic, no chain) and [:582](deps/midnight-ledger/proof-server/tests/integration_tests.rs#L582) (live full-tx against the local-dev chain). Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs` (name is historical — it targets local-dev).
+- **E2E tests / proof server** — Rust integration tests live inside the ledger submodule itself: [deps/midnight-ledger/proof-server/tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs) has the synthetic no-chain split test and the opt-in live full-tx test against the local-dev chain. Driver binary: `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs` (name is historical — it targets local-dev).
 - **Indexer Docker build** — [Dockerfile.indexer:18](Dockerfile.indexer#L18) copies `deps/midnight-ledger` into the build context; the indexer's `[patch.crates-io]` redirects ledger crates to this local checkout. Without it, the stock indexer crashes on a split-send block with `Invalid proof — while verifying Zswap proof`.
 - **Node Docker build** — `deps/midnight-node` on its split-prove branch already pins the matching ledger; built once and passed to local-dev via `MIDNIGHT_NODE_IMAGE`.
 - **Circuit compilation** — [Dockerfile.compactc](Dockerfile.compactc) and [build-circuits.sh:17-18](build-circuits.sh#L17) compile `zswap-split.compact` / `dust-split.compact` out of `deps/midnight-ledger/{zswap,ledger}/` into the zkir artifacts.
@@ -76,6 +76,8 @@ npm start
 Exposes node `127.0.0.1:9944`, indexer `:8088`, proof server `:6300`. In the CLI, pick **option 6** to fund the split-prove wallet (the address from `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` in `.env`).
 
 If option 6 fails during the shielded funding transfer with `Invalid Transaction: Custom error: 1`, check `docker logs midnight-node`. `Error deserializing ... Unrecognised discriminant` means the running node image is out of sync with this checkout. Rebuild the node/indexer images above, stop the local-dev stack, run `npm run clean` from `deps/midnight-local-dev`, and restart with the explicit image env vars.
+
+If the live split-send e2e fails at submit time with `Invalid Transaction: Custom error: 185`, check the node logs for `MalformedError::PedersenCheckFailure`. That points at transaction binding randomness / sealed-tx assembly, not proof verification. A fix in the proof-server preview client or zswap preimage helpers does not require rebuilding the already-running node or indexer images; rerun the Rust e2e after rebuilding the local Rust test binary.
 
 ### Run the live e2e (full split-send tx against the local chain)
 

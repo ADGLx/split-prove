@@ -37,10 +37,12 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 **Construct/prove/proof-server flow**
 - `Input::new_split()` returns a split proving context that carries the normal spend preimage, split public inputs, and required client proof without changing the zswap input struct layout.
 - The split proving context produces `provedInputHex` with an encoded `ZswapInputProof::Split` envelope; the HTTP endpoint no longer hand-builds the envelope.
+- `Input<ProofPreimage>::delta()` and `binding_randomness()` understand the split witness trailer (`coinCommitment`, `nullifier`) appended after `rc`; the preview submit path uses these shared helpers so sealed transactions use the same Pedersen binding randomness the node recomputes.
 - The synthetic split-spend proof-server test now deserializes `provedInputHex`, calls `Input<Proof>::well_formed(0)`, and asserts a raw split proof without the client proof, a tampered nullifier, and a malformed split envelope are rejected.
 
 **Build impact**
-- Rebuild the node, indexer, and proof-server images after this delta so they have the new verifier/artifacts. The zswap input/offer wire tags remain compatible with local-dev's stock wallet SDK.
+- Rebuild the node, indexer, and proof-server images after verifier/artifact changes so they have the new ledger code and circuit blobs. The zswap input/offer wire tags remain compatible with local-dev's stock wallet SDK.
+- Pure proof-server preview-client or test-side transaction assembly fixes, such as binding-randomness extraction, do not require rebuilding an already-running node or indexer; the node can already reject malformed sealed transactions correctly.
 
 ### Commits (newest first)
 
@@ -74,9 +76,9 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 **Proof server** ([deps/midnight-ledger/proof-server/](deps/midnight-ledger/proof-server/))
 - New endpoint `POST /v2/prove-split-spend` in [endpoints.rs](deps/midnight-ledger/proof-server/src/endpoints.rs) (+403). Reconstructs `QualifiedCoinInfo`, loads the Merkle tree, rejects handoffs whose commitment doesn't reproduce the root, pre-verifies `clientDerivationProof`, calls `Input::new_split`, proves `midnight/zswap/spend-split`, returns `proofHex` + `provedInputHex`. Latest working-tree behavior delegates envelope construction to the zswap split proving context so any caller can produce a node-acceptable split input.
-- New file [preview_client.rs](deps/midnight-ledger/proof-server/src/preview_client.rs) (+882): preview wallet scanner, handoff builder, full tx assembly (recipient output + binding randomness + StandardTransaction + Dust handoff to the JS wallet bridge), and `author_submitAndWatchExtrinsic` submission.
+- New file [preview_client.rs](deps/midnight-ledger/proof-server/src/preview_client.rs): preview wallet scanner, handoff builder, full tx assembly (recipient output + binding randomness + StandardTransaction + Dust handoff to the JS wallet bridge), and `author_submitAndWatchExtrinsic` submission.
 - New driver binary [bin/preview_split_prove.rs](deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs) (+102).
-- Integration tests [tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs) (+159): synthetic e2e (always runs) + opt-in live preview e2e (`MIDNIGHT_RUN_PREVIEW_E2E=1`).
+- Integration tests [tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs): synthetic e2e (always runs) + opt-in live preview e2e (`MIDNIGHT_RUN_PREVIEW_E2E=1`).
 
 **Misc**
 - [proof-server/Cargo.toml](deps/midnight-ledger/proof-server/Cargo.toml), [zswap/Cargo.toml](deps/midnight-ledger/zswap/Cargo.toml): dep wiring.
