@@ -44,69 +44,67 @@ If you rebuild only one side, blocks get rejected. All three pinned branches mus
 
 ## Running the E2E
 
-### Prerequisites
-
 ```bash
-npm install
-cp .env.example .env   # local-dev values ship populated; no edits needed
+make e2e
 ```
 
-`.env.example` is committed with throwaway local-dev test wallets (a recovery phrase and a recipient shielded address only ever used against the bundled `undeployed` chain). They're safe to commit. The `MIDNIGHT_PREVIEW_*` prefix on these vars is historical — every value targets local-dev.
+That's the headline demo — runs the live split-send against the local chain with per-stage tracing and a final report.
 
-Build the rebuilt node and indexer images once:
+### One-time setup
 
-```bash
-# Node — context must be the parent repo root (Cargo paths reach into deps/midnight-ledger)
-docker build -f deps/midnight-node/Dockerfile.split-prove -t midnight-node:split-prove-0.22.3 .
+1. `npm install` at the repo root, then `cp .env.example .env` (shipped values are throwaway and target the bundled `undeployed` chain).
+2. Build the rebuilt node + indexer images (only when the ledger submodule moves):
+   ```bash
+   docker build -f deps/midnight-node/Dockerfile.split-prove -t midnight-node:split-prove-0.22.3 .
+   docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+   ```
+3. In another terminal, start the local chain and fund the wallet with **option 6**:
+   ```bash
+   cd deps/midnight-local-dev && npm install
+   MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 \
+   MIDNIGHT_INDEXER_IMAGE=split-prove/indexer-standalone:local npm start
+   ```
 
-# Indexer
-docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .
+### What you'll see
+
+Per-stage `tracing` events during the run, then a final banner (real numbers):
+
+```
+--- CLIENT (wallet, local) ---
+  [1/6] scan       events replayed, coin selected             246 ms
+  [2/6] derive     client-derivation proof built             1489 ms
+         └─ of which local proving                           1477 ms
+  [5/6] assemble+  recipient output, dust balance, submit  10850 ms
+
+--- SERVER (proof-server, remote) ---
+  [3/6] handoff    POST /v2/prove-split-spend                 431 ms total
+         ├─ network (round-trip overhead)                     33 ms
+         ├─ server: verify client derivation proof            13 ms
+         └─ server: split-spend proving                      385 ms
+
+--- NODE + INDEXER ---
+  [6/6] submit     inclusion_status=inBlock  block_hash=0x6397…52f2
+
+--- Local vs remote proving ---
+  client local proving (derive):                             1477 ms
+  server remote proving (split-spend):                        385 ms
+  total wall-clock (stages 1–6):                            13016 ms
+
+--- Role boundary check ---
+  sk crossed the wire?  NO
+  what crossed (ClientHandoff): skCommitment, nullifier, pk,
+    commitmentHash, coinValue, coinType, coinNonce, mtIndex,
+    contractAddress, clientDerivationProof
 ```
 
-### Start the local chain
+The three role headers map onto the six stages in [End-to-End Flow](#end-to-end-flow), making the split-prove boundary visible. The **role boundary check** statically enumerates the `ClientHandoff` fields — the point of split-prove is that no `sk` field appears here.
 
-```bash
-cd deps/midnight-local-dev
-npm install
-MIDNIGHT_NODE_IMAGE=midnight-node:split-prove-0.22.3 \
-MIDNIGHT_INDEXER_IMAGE=split-prove/indexer-standalone:local \
-npm start
-```
+### Troubleshooting
 
-Exposes node `127.0.0.1:9944`, indexer `:8088`, proof server `:6300`. In the CLI, pick **option 6** to fund the split-prove wallet (the address from `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` in `.env`).
+- Funding fails with `Custom error: 1` + node logs show `Unrecognised discriminant`: node image out of sync with the ledger submodule. Rebuild images, `npm run clean` in `deps/midnight-local-dev`, restart.
+- `make e2e` fails at submit with `Custom error: 185` + `PedersenCheckFailure`: binding-randomness / sealed-tx assembly in the preview client, not proof verification. No docker rebuild — just rerun.
 
-If option 6 fails during the shielded funding transfer with `Invalid Transaction: Custom error: 1`, check `docker logs midnight-node`. `Error deserializing ... Unrecognised discriminant` means the running node image is out of sync with this checkout. Rebuild the node/indexer images above, stop the local-dev stack, run `npm run clean` from `deps/midnight-local-dev`, and restart with the explicit image env vars.
-
-If the live split-send e2e fails at submit time with `Invalid Transaction: Custom error: 185`, check the node logs for `MalformedError::PedersenCheckFailure`. That points at transaction binding randomness / sealed-tx assembly, not proof verification. A fix in the proof-server preview client or zswap preimage helpers does not require rebuilding the already-running node or indexer images; rerun the Rust e2e after rebuilding the local Rust test binary.
-
-### Run the live e2e (full split-send tx against the local chain)
-
-```bash
-MIDNIGHT_RUN_PREVIEW_E2E=1 \
-cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
-  --manifest-path deps/midnight-ledger/Cargo.toml \
-  -- --nocapture
-```
-
-(`MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS` is already set in `.env`.)
-
-Or run the driver binary directly (handy when iterating):
-
-```bash
-cargo run --offline -p midnight-proof-server --bin preview-split-prove \
-  --manifest-path deps/midnight-ledger/Cargo.toml \
-  -- --proof-server-url http://127.0.0.1:6300
-```
-
-### Run the synthetic e2e (no chain, no wallet)
-
-```bash
-cargo test --offline -p midnight-proof-server synthetic_client_derivation_proof_is_verified_before_split_proving \
-  --manifest-path deps/midnight-ledger/Cargo.toml \
-  -- --nocapture
-```
-
-See [POC_RUNBOOK.md](POC_RUNBOOK.md) for environment variables, endpoint shapes, and tuning knobs.
+See [POC_RUNBOOK.md](POC_RUNBOOK.md) for env vars, endpoint shapes, and tuning knobs.
 
 ## Split Proof Admission
 
