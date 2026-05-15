@@ -99,7 +99,7 @@ export circuit sk_prove(
   // 4. Open the per-wallet Poseidon commitment to `sk`. Recomputed in-circuit
   //    from witness `(sk, r)`; the admission verifier cross-checks this
   //    against the attestation's `commitmentSk` public output. Cheaper than
-  //    a Pedersen open by ~60× on this Compact lowering (see bench/SPIKE_RESULTS.md).
+  //    a Pedersen open by ~60× on this Compact lowering (see docs/spike-results.md).
   commitmentSk = disclose(transientHash<SkCommitPreimage>(SkCommitPreimage {
     sep: "midnight:sk-commit[v1]" as Field,
     secretKey: sk,

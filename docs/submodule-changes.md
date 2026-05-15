@@ -4,10 +4,10 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 | Component | Current rev | Baseline | Status |
 |---|---|---|---|
-| [deps/midnight-ledger](deps/midnight-ledger) (submodule, branch `feature/split-prove-ledger-8.0.2`) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
-| [deps/midnight-local-dev](deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
-| [deps/midnight-node](deps/midnight-node) (submodule, branch `feature/split-prove-node-0.22.3`) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
-| [deps/midnight-indexer](deps/midnight-indexer) (submodule, branch `feature/split-prove-indexer-4.0.1`) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
+| [deps/midnight-ledger](../deps/midnight-ledger) (submodule, branch `feature/split-prove-ledger-8.0.2`) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
+| [deps/midnight-local-dev](../deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
+| [deps/midnight-node](../deps/midnight-node) (submodule, branch `feature/split-prove-node-0.22.3`) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
+| [deps/midnight-indexer](../deps/midnight-indexer) (submodule, branch `feature/split-prove-indexer-4.0.1`) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
 
 ---
 
@@ -36,9 +36,9 @@ The current split-prove stack makes the node verify the wallet's proof and uses 
 | Current design | 836 ms | 1720 ms | 2.06× | 2.82 MB |
 | delta | −56.0% | −11.7% | shift to server | −45.7% |
 
-The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registration. The spike that picked Poseidon over a 3-base Pedersen open for `C_sk` (1344 KB prover key vs 22 KB on this Compact lowering) lives in [bench/SPIKE_RESULTS.md](bench/SPIKE_RESULTS.md) in the parent repo.
+The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registration. The spike that picked Poseidon over a 3-base Pedersen open for `C_sk` (1344 KB prover key vs 22 KB on this Compact lowering) lives in [spike-results.md](spike-results.md) in the parent repo.
 
-**Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](deps/midnight-ledger/zswap/src/verify.rs))
+**Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](../deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](../deps/midnight-ledger/zswap/src/verify.rs))
 - `Input<P, D>` and `Offer<P, D>` keep their original serialized wire shape so stock wallet/local-dev shielded transfers remain compatible with the patched node.
 - `SplitPublicInputs` includes `commitment_sk: Fr`.
 - `SplitProofBundle` carries `attestation_proof: Proof`. Older internal bundle shapes fail closed against the current verifier. Current wire layout:
@@ -52,11 +52,11 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 - Split inputs verify `WALLET_ATTESTATION_VK` first (statement `(pk, commitment_sk)`), then `CLIENT_DERIVATION_VK` (statement `(pk, nullifier, coin_binding_tag, commitment_sk)` — cell 3 carries `commitment_sk`), then `SPEND_SPLIT_VK`, then byte-equates `pk` and `commitment_sk` across the three proofs.
 - Plain inputs still verify with the stock `SPEND_VK`; malformed split envelopes are rejected explicitly via `MalformedSplitProofBundle`.
 
-**Circuit/artifact changes** ([deps/midnight-ledger/zswap/zswap-split.compact](deps/midnight-ledger/zswap/zswap-split.compact), [deps/midnight-ledger/zswap/static](deps/midnight-ledger/zswap/static))
+**Circuit/artifact changes** ([deps/midnight-ledger/zswap/zswap-split.compact](../deps/midnight-ledger/zswap/zswap-split.compact), [deps/midnight-ledger/zswap/static](../deps/midnight-ledger/zswap/static))
 - `spendSplitUser` (server circuit) computes/discloses `coinCommitment = H(coin, pk)`, asserts it equals the Merkle path leaf, and discloses `coinBindingTag`. The wallet-attestation optimization does not change the server circuit.
-- Mirrored `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
-- [deps/midnight-ledger/zswap/static/client-derivation.verifier](deps/midnight-ledger/zswap/static/client-derivation.verifier) matches the current `sk_prove` circuit, whose public transcript has 4 cells (cell 3 = `commitment_sk`). Source lives at [circuits/sk_proof.compact](circuits/sk_proof.compact) in the parent repo; regenerate after any change.
-- [deps/midnight-ledger/zswap/static/wallet-attestation.verifier](deps/midnight-ledger/zswap/static/wallet-attestation.verifier), compiled from [circuits/wallet_attestation.compact](circuits/wallet_attestation.compact) in the parent repo. The node/indexer link this verifier to admit split inputs without depending on proof-server paths.
+- Mirrored `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](../deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
+- [deps/midnight-ledger/zswap/static/client-derivation.verifier](../deps/midnight-ledger/zswap/static/client-derivation.verifier) matches the current `sk_prove` circuit, whose public transcript has 4 cells (cell 3 = `commitment_sk`). Source lives at [circuits/sk_proof.compact](../circuits/sk_proof.compact) in the parent repo; regenerate after any change.
+- [deps/midnight-ledger/zswap/static/wallet-attestation.verifier](../deps/midnight-ledger/zswap/static/wallet-attestation.verifier), compiled from [circuits/wallet_attestation.compact](../circuits/wallet_attestation.compact) in the parent repo. The node/indexer link this verifier to admit split inputs without depending on proof-server paths.
 - Artifacts are regenerated with the local Compact CLI, for example:
   ```bash
   compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
@@ -68,13 +68,13 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 **Construct/prove/proof-server flow**
 - `Input::new_split()` signature gains `commitment_sk: Fr` and `attestation_proof: Proof`; threads both into the emitted `SplitProofBundle`. The split proving context still returns `provedInputHex` with an encoded `ZswapInputProof::Split` envelope; the HTTP endpoint no longer hand-builds the envelope.
 - `Input<ProofPreimage>::delta()` and `binding_randomness()` are unchanged — the split witness trailer layout (`nullifier` appended after `rc`) is preserved, so preview submit-path Pedersen binding randomness still matches what the node recomputes.
-- `/v2/prove-split-spend` ([endpoints.rs](deps/midnight-ledger/proof-server/src/endpoints.rs)) accepts request fields `attestedCommitmentSk` and `attestationProof`; both are required for split spends. The endpoint fast-fail-verifies the attestation **before** any prover work, then verifies the client-derivation proof with the 4-cell transcript.
-- [preview_client.rs](deps/midnight-ledger/proof-server/src/preview_client.rs) registers a wallet attestation once per preview run via `prove_wallet_attestation`, attaches `attestedCommitmentSk` and `attestationProof` to every `/v2/prove-split-spend` POST, and uses the current 10-witness layout (sk, pk, r, coin) in `build_client_derivation_preimage`. The `WalletAttestationResolver` branch wires the key location `split/wallet/attestation` to the bundled `wallet_attest` artifact. The staged-report role-boundary check also asserts `r` (the attestation blinding) does not cross the wire alongside `sk`.
+- `/v2/prove-split-spend` ([endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs)) accepts request fields `attestedCommitmentSk` and `attestationProof`; both are required for split spends. The endpoint fast-fail-verifies the attestation **before** any prover work, then verifies the client-derivation proof with the 4-cell transcript.
+- [preview_client.rs](../deps/midnight-ledger/proof-server/src/preview_client.rs) registers a wallet attestation once per preview run via `prove_wallet_attestation`, attaches `attestedCommitmentSk` and `attestationProof` to every `/v2/prove-split-spend` POST, and uses the current 10-witness layout (sk, pk, r, coin) in `build_client_derivation_preimage`. The `WalletAttestationResolver` branch wires the key location `split/wallet/attestation` to the bundled `wallet_attest` artifact. The staged-report role-boundary check also asserts `r` (the attestation blinding) does not cross the wire alongside `sk`.
 - The synthetic split-spend integration test deserializes `provedInputHex`, calls `Input<Proof>::well_formed(0)`, and asserts that a raw split proof without the client+attestation proofs, a tampered nullifier, a tampered `coinBindingTag`, and a malformed split envelope are all rejected (`MalformedSplitProofBundle`).
 
 **Build impact**
 - Rebuild the node, indexer, and proof-server images after verifier changes so they have the current envelope code and circuit blobs. The zswap input/offer outer wire tags remain compatible with local-dev's stock wallet SDK; only the opaque proof envelope changed.
-- Regenerate `zswap/static/wallet-attestation.verifier` whenever [circuits/wallet_attestation.compact](circuits/wallet_attestation.compact) changes. Regenerate `zswap/static/client-derivation.verifier` whenever [circuits/sk_proof.compact](circuits/sk_proof.compact) changes.
+- Regenerate `zswap/static/wallet-attestation.verifier` whenever [circuits/wallet_attestation.compact](../circuits/wallet_attestation.compact) changes. Regenerate `zswap/static/client-derivation.verifier` whenever [circuits/sk_proof.compact](../circuits/sk_proof.compact) changes.
 - Pure proof-server preview-client or test-side fixes (binding-randomness extraction, JSON field renames, role-boundary report wording) do not require rebuilding an already-running node or indexer; the node can already reject malformed sealed transactions correctly.
 
 ### Commits (newest first)
@@ -92,29 +92,29 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 
 ### What changed, by area
 
-**New zswap split constructors and circuits** ([deps/midnight-ledger/zswap/src/construct.rs](deps/midnight-ledger/zswap/src/construct.rs), +149)
+**New zswap split constructors and circuits** ([deps/midnight-ledger/zswap/src/construct.rs](../deps/midnight-ledger/zswap/src/construct.rs), +149)
 - `AuthorizedClaim::new_split()` and `Input::new_split()` — accept pre-computed `(nullifier, pk, commitment, coinBindingTag)` instead of the raw secret key. The latest working-tree version keeps zswap input serialization stable; `Input::new_split()` returns a split context that carries `pk`, `coinBindingTag`, and `clientDerivationProof` until proving encodes them into the proof envelope.
-- New circuit source: [`zswap/zswap-split.compact`](deps/midnight-ledger/zswap/zswap-split.compact) (+41).
-- Compiled artifacts under [`zswap/static/`](deps/midnight-ledger/zswap/static/): `spend-split.{zkir,bzkir,prover,verifier}` and `sign-split.{zkir,bzkir,prover,verifier}` plus sha256 sidecars.
-- Mirrored zkir bytecode under [`zkir-precompiles/zswap/`](deps/midnight-ledger/zkir-precompiles/zswap/).
+- New circuit source: [`zswap/zswap-split.compact`](../deps/midnight-ledger/zswap/zswap-split.compact) (+41).
+- Compiled artifacts under [`zswap/static/`](../deps/midnight-ledger/zswap/static/): `spend-split.{zkir,bzkir,prover,verifier}` and `sign-split.{zkir,bzkir,prover,verifier}` plus sha256 sidecars.
+- Mirrored zkir bytecode under [`zkir-precompiles/zswap/`](../deps/midnight-ledger/zkir-precompiles/zswap/).
 
-**zkir support for committed inputs** ([deps/midnight-ledger/zkir/src/ir.rs](deps/midnight-ledger/zkir/src/ir.rs), [ir_vm.rs](deps/midnight-ledger/zkir/src/ir_vm.rs))
+**zkir support for committed inputs** ([deps/midnight-ledger/zkir/src/ir.rs](../deps/midnight-ledger/zkir/src/ir.rs), [ir_vm.rs](../deps/midnight-ledger/zkir/src/ir_vm.rs))
 - `IrSource::prove_split()` with `committed_input_count`.
 - `Preprocessed.committed_input_count` and `format_committed_instances()` override needed by the split flow.
 
-**Ledger verification wiring** ([deps/midnight-ledger/zswap/src/verify.rs](deps/midnight-ledger/zswap/src/verify.rs), +71)
+**Ledger verification wiring** ([deps/midnight-ledger/zswap/src/verify.rs](../deps/midnight-ledger/zswap/src/verify.rs), +71)
 - `lazy_static` refs for `SPEND_SPLIT_VK`, `CLIENT_DERIVATION_VK`, and `WALLET_ATTESTATION_VK` from the local `.verifier` blobs.
 - Split inputs are explicit via a typed proof envelope; the node verifies wallet-attestation, client-derivation, and spend-split proofs against matching public inputs.
 
-**Proof server** ([deps/midnight-ledger/proof-server/](deps/midnight-ledger/proof-server/))
-- New endpoint `POST /v2/prove-split-spend` in [endpoints.rs](deps/midnight-ledger/proof-server/src/endpoints.rs) (+403). Reconstructs `QualifiedCoinInfo`, loads the Merkle tree, rejects handoffs whose commitment doesn't reproduce the root, pre-verifies `attestationProof` and `clientDerivationProof`, calls `Input::new_split`, proves `midnight/zswap/spend-split`, returns `proofHex` + `provedInputHex`. Envelope construction is delegated to the zswap split proving context so any caller can produce a node-acceptable split input.
-- New file [preview_client.rs](deps/midnight-ledger/proof-server/src/preview_client.rs): preview wallet scanner, handoff builder, full tx assembly (recipient output + binding randomness + StandardTransaction + Dust handoff to the JS wallet bridge), and `author_submitAndWatchExtrinsic` submission.
-- New driver binary [bin/preview_split_prove.rs](deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs) (+102).
-- Integration tests [tests/integration_tests.rs](deps/midnight-ledger/proof-server/tests/integration_tests.rs): synthetic e2e (always runs) + opt-in live preview e2e (`MIDNIGHT_RUN_PREVIEW_E2E=1`).
+**Proof server** ([deps/midnight-ledger/proof-server/](../deps/midnight-ledger/proof-server/))
+- New endpoint `POST /v2/prove-split-spend` in [endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs) (+403). Reconstructs `QualifiedCoinInfo`, loads the Merkle tree, rejects handoffs whose commitment doesn't reproduce the root, pre-verifies `attestationProof` and `clientDerivationProof`, calls `Input::new_split`, proves `midnight/zswap/spend-split`, returns `proofHex` + `provedInputHex`. Envelope construction is delegated to the zswap split proving context so any caller can produce a node-acceptable split input.
+- New file [preview_client.rs](../deps/midnight-ledger/proof-server/src/preview_client.rs): preview wallet scanner, handoff builder, full tx assembly (recipient output + binding randomness + StandardTransaction + Dust handoff to the JS wallet bridge), and `author_submitAndWatchExtrinsic` submission.
+- New driver binary [bin/preview_split_prove.rs](../deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs) (+102).
+- Integration tests [tests/integration_tests.rs](../deps/midnight-ledger/proof-server/tests/integration_tests.rs): synthetic e2e (always runs) + opt-in live preview e2e (`MIDNIGHT_RUN_PREVIEW_E2E=1`).
 
 **Misc**
-- [proof-server/Cargo.toml](deps/midnight-ledger/proof-server/Cargo.toml), [zswap/Cargo.toml](deps/midnight-ledger/zswap/Cargo.toml): dep wiring.
-- [zswap/src/error.rs](deps/midnight-ledger/zswap/src/error.rs), [zswap/src/prove.rs](deps/midnight-ledger/zswap/src/prove.rs), [zswap/src/structure.rs](deps/midnight-ledger/zswap/src/structure.rs): error variants, split-circuit key resolution, struct exposure.
+- [proof-server/Cargo.toml](../deps/midnight-ledger/proof-server/Cargo.toml), [zswap/Cargo.toml](../deps/midnight-ledger/zswap/Cargo.toml): dep wiring.
+- [zswap/src/error.rs](../deps/midnight-ledger/zswap/src/error.rs), [zswap/src/prove.rs](../deps/midnight-ledger/zswap/src/prove.rs), [zswap/src/structure.rs](../deps/midnight-ledger/zswap/src/structure.rs): error variants, split-circuit key resolution, struct exposure.
 - `Cargo.lock` (+163): rolls in new proof-server deps.
 
 ---
@@ -132,14 +132,14 @@ Vendored under `deps/midnight-local-dev` by commit `7e23340 Vendor midnight loca
 | `7c1e04a` | document and configure split-prove amounts (`MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT`, transfer amount in env) |
 | `f9d76b4` | Updated READMEs |
 | `1a41d28` | streamlined option 6 for the e2e on local node setup (`fundSplitProveE2ESetup`) |
-| `ea52cbd` | rebuild indexer against local ledger so split-send blocks replay (also adds [Dockerfile.indexer](Dockerfile.indexer) and pins indexer image default) |
+| `ea52cbd` | rebuild indexer against local ledger so split-send blocks replay (also adds [Dockerfile.indexer](../Dockerfile.indexer) and pins indexer image default) |
 
 ### What changed
 
-- [src/funding.ts](deps/midnight-local-dev/src/funding.ts) (+123): new `fundSplitProveE2ESetup()` — funds accounts from `accounts.json` then sends a shielded NIGHT output to the hardcoded split-prove spender address, with up to 3 retries / 5s delay to recover from the proof-server's transient `BadInput("Failed direct assertion")` on first attempt. Honours `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE`, `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS`, and `MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT`.
-- [src/index.ts](deps/midnight-local-dev/src/index.ts) (+7): adds the `[6] Prepare split-prove e2e funding` menu entry.
-- [standalone.yml](deps/midnight-local-dev/standalone.yml) (±1): default `MIDNIGHT_INDEXER_IMAGE` now points at the rebuilt `split-prove/indexer-standalone:local` so the stack replays split-send blocks instead of crashing.
-- [.env.example](deps/midnight-local-dev/.env.example) (+4) and [README.md](deps/midnight-local-dev/README.md) (+94/−15): document the new env vars and option-6 flow.
+- [src/funding.ts](../deps/midnight-local-dev/src/funding.ts) (+123): new `fundSplitProveE2ESetup()` — funds accounts from `accounts.json` then sends a shielded NIGHT output to the hardcoded split-prove spender address, with up to 3 retries / 5s delay to recover from the proof-server's transient `BadInput("Failed direct assertion")` on first attempt. Honours `MIDNIGHT_SPLIT_PROVE_ACCOUNTS_FILE`, `MIDNIGHT_SPLIT_PROVE_SHIELDED_ADDRESS`, and `MIDNIGHT_SPLIT_PROVE_SHIELDED_AMOUNT`.
+- [src/index.ts](../deps/midnight-local-dev/src/index.ts) (+7): adds the `[6] Prepare split-prove e2e funding` menu entry.
+- [standalone.yml](../deps/midnight-local-dev/standalone.yml) (±1): default `MIDNIGHT_INDEXER_IMAGE` now points at the rebuilt `split-prove/indexer-standalone:local` so the stack replays split-send blocks instead of crashing.
+- [.env.example](../deps/midnight-local-dev/.env.example) (+4) and [README.md](../deps/midnight-local-dev/README.md) (+94/−15): document the new env vars and option-6 flow.
 
 ---
 
@@ -157,15 +157,15 @@ Three split-prove commits sit on top of `6f0ef437 bump node 0.22.3 (#1072)`. Use
 
 ### What changed
 
-**Repoint the Ledger 8 crate graph at the local checkout** ([Cargo.toml](deps/midnight-node/Cargo.toml), commit `ce17c6a4`)
+**Repoint the Ledger 8 crate graph at the local checkout** ([Cargo.toml](../deps/midnight-node/Cargo.toml), commit `ce17c6a4`)
 - Was: workspace pulled `mn-ledger-8`, `ledger-storage-ledger-8`, `onchain-runtime-ledger-8`, `zswap-ledger-8` as pinned crates.io versions; `coin-structure` / `transient-crypto` / `zkir` / `midnight-serialize` were reused from the L7 entries; a single `[patch.crates-io] midnight-zswap = { path = "../midnight-ledger/zswap" }` covered the rest.
 - Now: every ledger-8 crate (`base-crypto`, `coin-structure`, `midnight-serialize`, `transient-crypto`, `zkir`, plus the four pre-existing ones) is a `path = "../midnight-ledger/<crate>"` entry, and the `midnight-zswap` `[patch.crates-io]` is removed. This is what makes the rebuilt node link against the modified ledger (with the split-prove verifier keys + `well_formed` fallback) so it accepts split-send transactions.
-- [ledger/Cargo.toml](deps/midnight-node/ledger/Cargo.toml) and [ledger/helpers/Cargo.toml](deps/midnight-node/ledger/helpers/Cargo.toml): add matching optional deps + `std` feature wiring.
-- [ledger/src/lib.rs](deps/midnight-node/ledger/src/lib.rs) and [ledger/helpers/src/lib.rs](deps/midnight-node/ledger/helpers/src/lib.rs): the `ledger_8` module's `_local` aliases now point at the new `*-ledger-8` crates instead of inheriting the L7 ones.
+- [ledger/Cargo.toml](../deps/midnight-node/ledger/Cargo.toml) and [ledger/helpers/Cargo.toml](../deps/midnight-node/ledger/helpers/Cargo.toml): add matching optional deps + `std` feature wiring.
+- [ledger/src/lib.rs](../deps/midnight-node/ledger/src/lib.rs) and [ledger/helpers/src/lib.rs](../deps/midnight-node/ledger/helpers/src/lib.rs): the `ledger_8` module's `_local` aliases now point at the new `*-ledger-8` crates instead of inheriting the L7 ones.
 - `midnight-storage-core` pinned with `=1.1.0` (was `1.1.0`) to keep the resolver from drifting.
 - `Cargo.lock` (+277): consequence of the path-dep switch.
 
-**Build a runnable split-prove node image** ([Dockerfile.split-prove](deps/midnight-node/Dockerfile.split-prove), commits `232f14d6` then `785e4ddd`)
+**Build a runnable split-prove node image** ([Dockerfile.split-prove](../deps/midnight-node/Dockerfile.split-prove), commits `232f14d6` then `785e4ddd`)
 - Multi-stage `rust:1.93` builder. Build context must be the parent `split-prove` repo root because the patched Cargo paths reference `../midnight-ledger`; the Dockerfile `COPY`s both `deps/midnight-node` and `deps/midnight-ledger` into `/build/deps/...`.
 - Runtime stage is `public.ecr.aws/amazonlinux/amazonlinux:2023-minimal` with the standard observability tooling (`libfaketime`, `bytehound`) and the node's `entrypoint.sh` / `res/`.
 - Build command: `docker build -f deps/midnight-node/Dockerfile.split-prove -t midnight-node:split-prove-0.22.3 .` from the parent repo root. Pass the resulting tag to local-dev as `MIDNIGHT_NODE_IMAGE`.
@@ -184,14 +184,14 @@ Single commit on top of the v4.0.1 release. Diff (`git diff c90fb85..HEAD`): **3
 
 ### What changed
 
-**Repoint the v8 ledger crates at the local checkout** ([Cargo.toml](deps/midnight-indexer/Cargo.toml))
+**Repoint the v8 ledger crates at the local checkout** ([Cargo.toml](../deps/midnight-indexer/Cargo.toml))
 - Drop the `layout-v2` feature on `midnight-storage-core` (indexer doesn't reference it) and relax the version from `=1.1` to `1.0` so the local ledger's `storage-core 1.0.2` can satisfy it.
 - Add a `[patch.crates-io]` block redirecting every v8 ledger crate (`midnight-base-crypto`, `midnight-coin-structure`, `midnight-ledger`, `midnight-ledger-static`, `midnight-onchain-runtime`, `midnight-onchain-state`, `midnight-onchain-vm`, `midnight-serialize`, `midnight-storage`, `midnight-storage-core`, `midnight-transient-crypto`, `midnight-zswap`) to `../midnight-ledger/<crate>`. The v7 ledger crates continue to resolve from crates.io — they're only touched for legacy-tx replay.
 
-**Stub a new DB-trait method** ([indexer-common/src/infra/ledger_db/v1_1.rs](deps/midnight-indexer/indexer-common/src/infra/ledger_db/v1_1.rs))
+**Stub a new DB-trait method** ([indexer-common/src/infra/ledger_db/v1_1.rs](../deps/midnight-indexer/indexer-common/src/infra/ledger_db/v1_1.rs))
 - `storage-core 1.0.2` added `get_unreachable_keys()` to the `DB` trait. The indexer never GCs unreachable nodes in normal operation, so returning `Vec::new()` is correct for replay-only usage.
 
-Without this commit, the stock `midnightntwrk/indexer-standalone:4.0.1` image links the packaged `midnight-zswap 8.0.0` verifier and exits with `Invalid proof — while verifying Zswap proof` while replaying any block containing a split-send tx. Build via the parent repo's [Dockerfile.indexer](Dockerfile.indexer): `docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .`
+Without this commit, the stock `midnightntwrk/indexer-standalone:4.0.1` image links the packaged `midnight-zswap 8.0.0` verifier and exits with `Invalid proof — while verifying Zswap proof` while replaying any block containing a split-send tx. Build via the parent repo's [Dockerfile.indexer](../Dockerfile.indexer): `docker build -f Dockerfile.indexer -t split-prove/indexer-standalone:local .`
 
 ## How to refresh this doc
 

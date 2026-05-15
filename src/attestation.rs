@@ -11,7 +11,7 @@
 //! proof's `(pk, C_sk)` public outputs.
 //!
 //! See `/Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md`
-//! and `bench/SPIKE_RESULTS.md` for the design rationale and prover-key
+//! and `docs/spike-results.md` for the design rationale and prover-key
 //! measurements that made Poseidon the chosen commitment primitive.
 
 use midnight_base_crypto::hash::HashOutput;
