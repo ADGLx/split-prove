@@ -181,7 +181,7 @@ make e2e
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> well_formed=skipped inclusion=inBlock block_hash=<hash>
+split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
 ```
 
 The underlying preview driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:
@@ -227,7 +227,7 @@ replay, the e2e path uses these checks:
   keys, so the Zswap proof is verified against the same code the rebuilt node
   runs (see `preview_client.rs`).
 - The wallet helper uses `author_submitAndWatchExtrinsic` and waits for the
-  node to report `inBlock` (default) or `finalized` before resolving. Tune with
+  node to report `finalized` by default before resolving. Tune with
   `MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR=submitted|inBlock|finalized`. The node's
   inclusion check uses the same locally-built ledger code as the proof-server.
 - An optional JS-side `ledger.wellFormed` check is available via

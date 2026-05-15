@@ -6,7 +6,7 @@ DEFAULT_MIDNIGHT_INDEXER_IMAGE ?= split-prove/indexer-standalone:local
 .PHONY: e2e images rebuild-images image-node image-indexer local-install local-nodes local-up local-clean local-restart local-env
 
 e2e:
-	MIDNIGHT_RUN_PREVIEW_E2E=1 cargo test -p midnight-proof-server \
+	MIDNIGHT_RUN_PREVIEW_E2E=1 MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR=finalized cargo test -p midnight-proof-server \
 	    --manifest-path deps/midnight-ledger/Cargo.toml \
 	    preview_wallet_proves_real_unspent_split_spend -- --nocapture
 

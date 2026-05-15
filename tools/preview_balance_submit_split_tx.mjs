@@ -339,7 +339,7 @@ function assertPatchedStackUrlAllowed(name, value) {
 }
 
 function rawRpcWaitFor() {
-  const raw = envValue('MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR', 'inBlock').trim().toLowerCase();
+  const raw = envValue('MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR', 'finalized').trim().toLowerCase();
   if (raw === 'submitted' || raw === 'submit') return 'submitted';
   if (raw === 'inblock' || raw === 'in_block' || raw === 'in-block') return 'inBlock';
   if (raw === 'finalized' || raw === 'finalised') return 'finalized';
@@ -575,6 +575,8 @@ async function main() {
     balancedTxHex,
     txHash: txHash(balanced),
     txIdentifiers: collectIdentifiers(balanced),
+    preSubmitWasmCheck: wellFormedStatus,
+    preSubmitWasmDiagnostic: wellFormedDiagnostic,
     wellFormed: wellFormedStatus,
     wellFormedDiagnostic,
     submitted: false,
