@@ -4,10 +4,10 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 | Component | Current rev | Baseline | Status |
 |---|---|---|---|
-| [deps/midnight-ledger](../deps/midnight-ledger) (submodule, branch `feature/split-prove-ledger-8.0.2`) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
+| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger)) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
 | [deps/midnight-local-dev](../deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
-| [deps/midnight-node](../deps/midnight-node) (submodule, branch `feature/split-prove-node-0.22.3`) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
-| [deps/midnight-indexer](../deps/midnight-indexer) (submodule, branch `feature/split-prove-indexer-4.0.1`) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
+| [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) ([local](../deps/midnight-node)) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
+| [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1) ([local](../deps/midnight-indexer)) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
 
 ---
 
