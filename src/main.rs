@@ -18,7 +18,7 @@ use midnight_transient_crypto::curve::Fr;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
-use midnight_zswap::{AuthorizedClaim, Input};
+use midnight_zswap::Input;
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::borrow::Cow;
@@ -131,18 +131,6 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
     .map_err(|e| format!("build spend preimage: {:?}", e))
 }
 
-/// SERVER SIDE: build the ProofPreimage for zswap/sign using the client handoff.
-pub fn server_build_sign_preimage(
-    handoff: &ClientHandoff,
-) -> Result<AuthorizedClaim<ProofPreimage>, String> {
-    AuthorizedClaim::new_split::<OsRng, InMemoryDB>(
-        &mut OsRng,
-        handoff.coin_info.clone(),
-        handoff.pk,
-    )
-    .map_err(|e| format!("build sign preimage: {:?}", e))
-}
-
 // ─── Demo ───────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -209,20 +197,6 @@ fn main() {
         "inputs[0] must NOT be raw sk"
     );
     println!("  inputs[0..2] = pk fields (not sk): ✓");
-
-    // ── Build sign preimage too ──
-    let start = Instant::now();
-    let sign_claim = server_build_sign_preimage(&handoff).expect("sign preimage");
-    let sign_build_time = start.elapsed();
-    println!("\n  Sign preimage:");
-    println!("    Build time:    {:?}", sign_build_time);
-    println!("    key_location:  {}", sign_claim.proof.key_location.0);
-    println!("    inputs count:  {}", sign_claim.proof.inputs.len());
-    assert_eq!(
-        sign_claim.proof.inputs[0], pk_fields[0],
-        "sign inputs[0] should be first pk field"
-    );
-    println!("    inputs[0] = pk field (not sk): ✓");
 
     // ── Compare with original (sk-exposing) flow ──
     println!("\n--- COMPARISON: original flow (exposes sk) ---");

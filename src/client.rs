@@ -78,7 +78,10 @@ pub struct ClientHandoff {
     /// Merkle tree index of the coin
     pub mt_index: u64,
 
-    /// Whether this is a contract-owned coin (Some(address)) or user-owned (None)
+    /// Contract-owned coin address, if present.
+    ///
+    /// Split-prove currently supports user-owned shielded coins only; server
+    /// preimage construction rejects `Some`.
     pub contract_address: Option<[u8; 32]>,
 
     /// Serialized proof that binds sk to nullifier, coin_binding_tag, and the
@@ -133,7 +136,8 @@ where
 /// # Arguments
 /// * `sk` - The coin secret key (NEVER sent to server)
 /// * `coin` - The qualified coin info (value, type, nonce, mt_index)
-/// * `contract` - If the coin is contract-owned, the contract address
+/// * `contract` - Reserved for zswap metadata compatibility. Split-prove
+///   currently supports user-owned shielded coins only.
 pub fn client_prepare(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
@@ -259,7 +263,7 @@ pub fn build_client_derivation_preimage(
     sk_blinding: Fr,
     _coin: &QualifiedCoinInfo,
     handoff: &ClientHandoff,
-) -> ProofPreimage {
+) -> Result<ProofPreimage, String> {
     let mut inputs = Vec::new();
     // Position 0..1: sk limbs (matches v3 circuit signature first parameter).
     sk.0 .0.field_repr(&mut inputs);
@@ -273,15 +277,15 @@ pub fn build_client_derivation_preimage(
     handoff.coin_color.field_repr(&mut inputs);
     inputs.push(Fr::from(handoff.coin_value));
 
-    ProofPreimage {
+    Ok(ProofPreimage {
         inputs,
         private_transcript: Vec::new(),
-        public_transcript_inputs: client_derivation_public_transcript_inputs(handoff),
+        public_transcript_inputs: client_derivation_public_transcript_inputs(handoff)?,
         public_transcript_outputs: Vec::new(),
         binding_input: 0.into(),
         communications_commitment: None,
         key_location: KeyLocation(Cow::Borrowed(CLIENT_DERIVATION_KEY_LOCATION)),
-    }
+    })
 }
 
 pub async fn client_prove_derivation(
@@ -303,13 +307,15 @@ pub fn client_derivation_proving_data() -> ProvingKeyMaterial {
     }
 }
 
-pub fn client_derivation_public_transcript_inputs(handoff: &ClientHandoff) -> Vec<Fr> {
-    client_derivation_public_transcript_inputs_from_parts(
+pub fn client_derivation_public_transcript_inputs(
+    handoff: &ClientHandoff,
+) -> Result<Vec<Fr>, String> {
+    Ok(client_derivation_public_transcript_inputs_from_parts(
         handoff_pk(handoff),
         handoff.nullifier,
-        handoff_coin_binding_tag_fr(handoff),
-        handoff_commitment_sk_fr(handoff),
-    )
+        try_handoff_coin_binding_tag_fr(handoff)?,
+        try_handoff_commitment_sk_fr(handoff)?,
+    ))
 }
 
 pub fn client_derivation_public_transcript_inputs_from_parts(
@@ -372,13 +378,24 @@ fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, I
 
 /// Reconstruct the Fr `C_sk` (Poseidon commitment to sk) from the handoff bytes.
 pub fn handoff_commitment_sk_fr(handoff: &ClientHandoff) -> Fr {
+    try_handoff_commitment_sk_fr(handoff).expect("valid Fr from attested_commitment_sk bytes")
+}
+
+/// Fallibly reconstruct the Fr `C_sk` (Poseidon commitment to sk) from handoff bytes.
+pub fn try_handoff_commitment_sk_fr(handoff: &ClientHandoff) -> Result<Fr, String> {
     Fr::from_le_bytes(&handoff.attested_commitment_sk)
-        .expect("valid Fr from attested_commitment_sk bytes")
+        .ok_or_else(|| "invalid attested_commitment_sk field element".to_string())
 }
 
 /// Reconstruct the Fr coin-binding tag from the handoff bytes.
 pub fn handoff_coin_binding_tag_fr(handoff: &ClientHandoff) -> Fr {
-    Fr::from_le_bytes(&handoff.coin_binding_tag).expect("valid Fr from coin binding tag bytes")
+    try_handoff_coin_binding_tag_fr(handoff).expect("valid Fr from coin binding tag bytes")
+}
+
+/// Fallibly reconstruct the Fr coin-binding tag from handoff bytes.
+pub fn try_handoff_coin_binding_tag_fr(handoff: &ClientHandoff) -> Result<Fr, String> {
+    Fr::from_le_bytes(&handoff.coin_binding_tag)
+        .ok_or_else(|| "invalid coin_binding_tag field element".to_string())
 }
 
 /// Reconstruct the Nullifier from the handoff bytes.
@@ -520,7 +537,8 @@ mod tests {
             mt_index: 0,
         };
         let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
+        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
+            .expect("valid handoff should build client derivation preimage");
         let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
             include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
         ))
@@ -543,13 +561,45 @@ mod tests {
         };
         let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
         handoff.nullifier[0] ^= 1;
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
+        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
+            .expect("valid handoff should build client derivation preimage");
         let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
             include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
         ))
         .expect("client derivation IR should load");
 
         assert!(preimage.check(&ir).is_err());
+    }
+
+    #[test]
+    fn client_derivation_preimage_rejects_invalid_field_bytes() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let blinding = OsRng.r#gen();
+        let coin = QualifiedCoinInfo {
+            value: 500u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
+        handoff.coin_binding_tag = [0xff; 32];
+
+        let err = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
+            .expect_err("invalid coin-binding field bytes must be rejected");
+        assert!(
+            err.contains("invalid coin_binding_tag field element"),
+            "unexpected error: {err}"
+        );
+
+        handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
+        handoff.attested_commitment_sk = [0xff; 32];
+
+        let err = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
+            .expect_err("invalid commitment field bytes must be rejected");
+        assert!(
+            err.contains("invalid attested_commitment_sk field element"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -603,7 +653,8 @@ mod tests {
         );
 
         // And the preimage must satisfy the v3 IR with this `C_sk`.
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff);
+        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
+            .expect("valid handoff should build client derivation preimage");
         let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
             include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
         ))
@@ -640,7 +691,8 @@ mod tests {
         assert_ne!(attacker_blinding, registered_blinding);
 
         let bad_preimage =
-            build_client_derivation_preimage(&sk, attacker_blinding, &coin, &honest_handoff);
+            build_client_derivation_preimage(&sk, attacker_blinding, &coin, &honest_handoff)
+                .expect("valid handoff should build client derivation preimage");
         let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
             include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
         ))

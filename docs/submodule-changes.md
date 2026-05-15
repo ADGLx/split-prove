@@ -93,9 +93,9 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 ### What changed, by area
 
 **New zswap split constructors and circuits** ([deps/midnight-ledger/zswap/src/construct.rs](../deps/midnight-ledger/zswap/src/construct.rs), +149)
-- `AuthorizedClaim::new_split()` and `Input::new_split()` — accept pre-computed `(nullifier, pk, commitment, coinBindingTag)` instead of the raw secret key. The latest working-tree version keeps zswap input serialization stable; `Input::new_split()` returns a split context that carries `pk`, `coinBindingTag`, and `clientDerivationProof` until proving encodes them into the proof envelope.
+- `Input::new_split()` accepts pre-computed `(nullifier, pk, commitment, coinBindingTag)` instead of the raw secret key. The latest working-tree version keeps zswap input serialization stable; `Input::new_split()` returns a split context that carries `pk`, `coinBindingTag`, and `clientDerivationProof` until proving encodes them into the proof envelope. `AuthorizedClaim::new_split()` / `sign-split` is only prototype placeholder wiring and is not the split-send authorization story.
 - New circuit source: [`zswap/zswap-split.compact`](../deps/midnight-ledger/zswap/zswap-split.compact) (+41).
-- Compiled artifacts under [`zswap/static/`](../deps/midnight-ledger/zswap/static/): `spend-split.{zkir,bzkir,prover,verifier}` and `sign-split.{zkir,bzkir,prover,verifier}` plus sha256 sidecars.
+- Compiled artifacts under [`zswap/static/`](../deps/midnight-ledger/zswap/static/): `spend-split.{zkir,bzkir,prover,verifier}` plus sha256 sidecars. `sign-split.*` exists as prototype placeholder material only.
 - Mirrored zkir bytecode under [`zkir-precompiles/zswap/`](../deps/midnight-ledger/zkir-precompiles/zswap/).
 
 **zkir support for committed inputs** ([deps/midnight-ledger/zkir/src/ir.rs](../deps/midnight-ledger/zkir/src/ir.rs), [ir_vm.rs](../deps/midnight-ledger/zkir/src/ir_vm.rs))

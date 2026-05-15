@@ -77,7 +77,9 @@ Start the local node/indexer/proof-server stack in another terminal:
 make local-nodes
 ```
 
-Use local-dev option 6 to fund the split-prove wallet before running `make e2e`. The demo scans for the funded shielded output, creates the wallet attestation and per-spend client proof, calls `/v2/prove-split-spend`, assembles the split transaction, Dust-balances it, submits it to the rebuilt node, and waits for inclusion.
+Use local-dev option 6 to fund the split-prove wallet before running `make e2e`. The demo scans for the funded shielded output, creates the wallet attestation and per-spend client proof, calls `/v2/prove-split-spend`, assembles the split transaction, Dust-balances it, submits it to the rebuilt node, and waits for inclusion. Both node and indexer must be rebuilt against the patched ledger; the helper defaults to local patched endpoints and refuses remote node/indexer URLs unless `MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK=1` is set for a known patched pair.
+
+The current split-prove demo supports user-owned shielded coins only. Contract-owned split spends are rejected by the proof-server and SDK preimage builder.
 
 More run details, environment variables, and endpoint shapes live in [docs/poc-runbook.md](docs/poc-runbook.md).
 

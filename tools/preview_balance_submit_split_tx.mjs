@@ -4,10 +4,10 @@ import { existsSync } from 'node:fs';
 import { mnemonicToSeedSync } from '@scure/bip39';
 
 const DEFAULT_PREVIEW = {
-  networkId: 'preview',
-  indexerHttpUrl: 'https://indexer.preview.midnight.network/api/v4/graphql',
-  indexerWsUrl: 'wss://indexer.preview.midnight.network/api/v4/graphql/ws',
-  nodeUrl: 'wss://rpc.preview.midnight.network',
+  networkId: 'undeployed',
+  indexerHttpUrl: 'http://127.0.0.1:8088/api/v4/graphql',
+  indexerWsUrl: 'ws://127.0.0.1:8088/api/v4/graphql/ws',
+  nodeUrl: 'ws://127.0.0.1:9944',
 };
 
 function bytesToHex(bytes) {
@@ -271,10 +271,15 @@ function deriveKeys({ HDWallet, Roles, validateMnemonic, ledger, createKeystore,
 function createNetworkConfiguration({ InMemoryTransactionHistoryStorage }) {
   const indexerHttpUrl = envValue('MIDNIGHT_PREVIEW_INDEXER_HTTP', DEFAULT_PREVIEW.indexerHttpUrl);
   const indexerWsUrl = envValue('MIDNIGHT_PREVIEW_INDEXER_WS', DEFAULT_PREVIEW.indexerWsUrl);
+  const nodeUrl = envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_PREVIEW.nodeUrl);
+  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_NODE_WS', nodeUrl);
+  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_INDEXER_HTTP', indexerHttpUrl);
+  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_INDEXER_WS', indexerWsUrl);
+  assertNodeUrlAllowed(nodeUrl);
   return {
     indexerUrl: indexerWsUrl,
     networkId: envValue('MIDNIGHT_PREVIEW_NETWORK_ID', DEFAULT_PREVIEW.networkId),
-    relayURL: new URL(envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_PREVIEW.nodeUrl)),
+    relayURL: new URL(nodeUrl),
     costParameters: {
       additionalFeeOverhead: 300_000_000_000_000n,
       feeBlocksMargin: 5,
@@ -305,9 +310,31 @@ function submitMode() {
 
 function assertNodeUrlAllowed(nodeUrl) {
   const parsed = new URL(nodeUrl);
-  const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]' || parsed.hostname === '::1';
+  const isLocalhost = isLocalStackUrl(parsed);
   if (parsed.protocol !== 'wss:' && !(isLocalhost && parsed.protocol === 'ws:')) {
     throw new Error('MIDNIGHT_PREVIEW_NODE_WS must use wss:// for non-localhost networks');
+  }
+}
+
+function isLocalStackUrl(parsedUrl) {
+  return parsedUrl.hostname === 'localhost'
+    || parsedUrl.hostname === '127.0.0.1'
+    || parsedUrl.hostname === '[::1]'
+    || parsedUrl.hostname === '::1';
+}
+
+function allowRemotePatchedStack() {
+  return ['1', 'true', 'yes'].includes(
+    envValue('MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK', '').trim().toLowerCase(),
+  );
+}
+
+function assertPatchedStackUrlAllowed(name, value) {
+  const parsed = new URL(value);
+  if (!isLocalStackUrl(parsed) && !allowRemotePatchedStack()) {
+    throw new Error(
+      `${name} must point at the rebuilt local split-prove stack. Set MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK=1 only for a known patched node/indexer pair.`,
+    );
   }
 }
 
@@ -338,6 +365,7 @@ function extractInclusion(status) {
 
 async function submitFinalizedTxToNode(txHex) {
   const nodeUrl = envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_PREVIEW.nodeUrl);
+  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_NODE_WS', nodeUrl);
   assertNodeUrlAllowed(nodeUrl);
   const extrinsicHex = wrapAsMidnightExtrinsic(fromHex(txHex));
   const timeoutMs = Number.parseInt(envValue('MIDNIGHT_PREVIEW_RAW_RPC_SUBMIT_TIMEOUT_SECS', '120'), 10) * 1000;

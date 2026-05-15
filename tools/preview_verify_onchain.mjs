@@ -12,7 +12,7 @@
 // This does NOT reuse the submitter's RPC subscription — the point is to be a
 // second, independent witness that the transaction is on chain.
 
-const DEFAULT_NODE_URL = 'wss://rpc.preview.midnight.network';
+const DEFAULT_NODE_URL = 'ws://127.0.0.1:9944';
 
 function envValue(name, fallback = '') {
   const value = process.env[name];
@@ -39,12 +39,31 @@ function normHex(value) {
 
 function assertNodeUrlAllowed(nodeUrl) {
   const parsed = new URL(nodeUrl);
-  const isLocalhost = parsed.hostname === 'localhost'
-    || parsed.hostname === '127.0.0.1'
-    || parsed.hostname === '[::1]'
-    || parsed.hostname === '::1';
+  const isLocalhost = isLocalStackUrl(parsed);
   if (parsed.protocol !== 'wss:' && !(isLocalhost && parsed.protocol === 'ws:')) {
     throw new Error('MIDNIGHT_PREVIEW_NODE_WS must use wss:// for non-localhost networks');
+  }
+}
+
+function isLocalStackUrl(parsedUrl) {
+  return parsedUrl.hostname === 'localhost'
+    || parsedUrl.hostname === '127.0.0.1'
+    || parsedUrl.hostname === '[::1]'
+    || parsedUrl.hostname === '::1';
+}
+
+function allowRemotePatchedStack() {
+  return ['1', 'true', 'yes'].includes(
+    envValue('MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK', '').trim().toLowerCase(),
+  );
+}
+
+function assertPatchedStackUrlAllowed(name, value) {
+  const parsed = new URL(value);
+  if (!isLocalStackUrl(parsed) && !allowRemotePatchedStack()) {
+    throw new Error(
+      `${name} must point at the rebuilt local split-prove stack. Set MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK=1 only for a known patched node/indexer pair.`,
+    );
   }
 }
 
@@ -108,6 +127,7 @@ function rpcClient(nodeUrl, timeoutMs) {
 async function main() {
   const args = parseArgs(process.argv);
   const nodeUrl = envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_NODE_URL);
+  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_NODE_WS', nodeUrl);
   assertNodeUrlAllowed(nodeUrl);
   const timeoutMs = Number.parseInt(envValue('MIDNIGHT_PREVIEW_VERIFY_TIMEOUT_SECS', '60'), 10) * 1000;
   const callTimeoutMs = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000;

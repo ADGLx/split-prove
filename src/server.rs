@@ -4,13 +4,12 @@
 //! and proves using `prove_split()` with committed instances.
 
 use crate::client::{
-    handoff_coin_binding_tag_fr, handoff_commitment, handoff_commitment_sk_fr, handoff_nullifier,
-    handoff_pk, ClientHandoff,
+    handoff_commitment, handoff_nullifier, handoff_pk, try_handoff_coin_binding_tag_fr,
+    try_handoff_commitment_sk_fr, ClientHandoff,
 };
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
 use midnight_coin_structure::coin::ShieldedTokenType;
-use midnight_coin_structure::contract::ContractAddress;
 use midnight_storage::db::DB;
 use midnight_storage::Storable;
 use midnight_transient_crypto::merkle_tree::MerkleTree;
@@ -25,10 +24,13 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
     handoff: &ClientHandoff,
     tree: &MerkleTree<A, D>,
 ) -> Result<Input<ProofPreimage, D>, String> {
+    if handoff.contract_address.is_some() {
+        return Err("split spend preimages currently require user-owned shielded coins".into());
+    }
+
     let coin = reconstruct_coin(handoff)?;
-    let contract = handoff
-        .contract_address
-        .map(|a| ContractAddress(HashOutput(a)));
+    let coin_binding_tag = try_handoff_coin_binding_tag_fr(handoff)?;
+    let commitment_sk = try_handoff_commitment_sk_fr(handoff)?;
     let client_derivation_proof = handoff
         .client_derivation_proof
         .as_deref()
@@ -56,18 +58,22 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         handoff_nullifier(handoff),
         handoff_commitment(handoff),
         handoff_pk(handoff),
-        handoff_coin_binding_tag_fr(handoff),
-        handoff_commitment_sk_fr(handoff),
+        coin_binding_tag,
+        commitment_sk,
         client_derivation_proof,
         attestation_proof,
-        contract,
+        None,
         tree,
     )
     .map(|split_input| split_input.into_preimage())
     .map_err(|e| format!("build spend preimage: {:?}", e))
 }
 
-/// Build a sign ProofPreimage from a ClientHandoff.
+/// Build a placeholder sign-split ProofPreimage from a ClientHandoff.
+///
+/// This helper does not prove real secret-key authorization. It exists only for
+/// prototype wiring that needs the split key location and public-key-shaped
+/// inputs; do not present it as the authorization step in the split-send demo.
 pub fn build_sign_preimage(
     handoff: &ClientHandoff,
 ) -> Result<AuthorizedClaim<ProofPreimage>, String> {
@@ -215,7 +221,62 @@ mod tests {
     }
 
     #[test]
-    fn build_sign_preimage_succeeds() {
+    fn build_spend_preimage_rejects_contract_owned_handoff() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 1000u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let tree = setup_tree(&sk, &coin);
+        let mut handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
+        handoff.contract_address = Some([7u8; 32]);
+
+        let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
+            .expect_err("contract-owned split spends must be rejected");
+        assert!(
+            err.contains("user-owned shielded coins"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_spend_preimage_rejects_invalid_handoff_field_bytes() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 1000u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 0,
+        };
+        let tree = setup_tree(&sk, &coin);
+        let mut handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
+        handoff.coin_binding_tag = [0xff; 32];
+
+        let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
+            .expect_err("invalid handoff field bytes must be rejected");
+        assert!(
+            err.contains("invalid coin_binding_tag field element"),
+            "unexpected error: {err}"
+        );
+
+        handoff = client_prepare(&sk, &coin, None);
+        attach_dummy_client_proof(&mut handoff);
+        handoff.attested_commitment_sk = [0xff; 32];
+
+        let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
+            .expect_err("invalid handoff field bytes must be rejected");
+        assert!(
+            err.contains("invalid attested_commitment_sk field element"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn placeholder_build_sign_preimage_succeeds() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
         let coin = QualifiedCoinInfo {
             value: 500u64.into(),
