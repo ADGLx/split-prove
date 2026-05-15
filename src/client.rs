@@ -174,8 +174,7 @@ pub fn client_prepare_with_blinding(
     // a known blinding get a deterministic `attested_commitment_sk`; production
     // callers should use `client_prepare_with_attestation` so the value is
     // pinned to the registered attestation.
-    let (_, attested_commitment_sk) =
-        crate::attestation::derive_attestation_outputs(sk, blinding);
+    let (_, attested_commitment_sk) = crate::attestation::derive_attestation_outputs(sk, blinding);
 
     // Serialize coin nonce
     let mut nonce_bytes = [0u8; 32];
@@ -402,6 +401,38 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    const JUBJUB_SCALAR_MODULUS_LE: [u8; 32] = [
+        0xb7, 0x2c, 0xf7, 0xd6, 0x5e, 0x0e, 0x97, 0xd0, 0x82, 0x10, 0xc8, 0xcc, 0x93, 0x20, 0x68,
+        0xa6, 0x00, 0x3b, 0x34, 0x01, 0x01, 0x3b, 0x67, 0x06, 0xa9, 0xaf, 0x33, 0x65, 0xea, 0xb4,
+        0x7d, 0x0e,
+    ];
+
+    fn reduce_once_mod_jubjub_scalar(mut bytes: [u8; 32]) -> [u8; 32] {
+        if le_bytes_ge(&bytes, &JUBJUB_SCALAR_MODULUS_LE) {
+            let mut borrow = 0u16;
+            for (byte, modulus_byte) in bytes.iter_mut().zip(JUBJUB_SCALAR_MODULUS_LE) {
+                let lhs = *byte as i16 - borrow as i16;
+                if lhs >= modulus_byte as i16 {
+                    *byte = (lhs - modulus_byte as i16) as u8;
+                    borrow = 0;
+                } else {
+                    *byte = (lhs + 256 - modulus_byte as i16) as u8;
+                    borrow = 1;
+                }
+            }
+            debug_assert_eq!(borrow, 0);
+        }
+        bytes
+    }
+
+    fn le_bytes_ge(lhs: &[u8; 32], rhs: &[u8; 32]) -> bool {
+        lhs.iter()
+            .zip(rhs.iter())
+            .rev()
+            .find_map(|(a, b)| (a != b).then_some(a > b))
+            .unwrap_or(true)
+    }
+
     #[test]
     fn client_prepare_produces_valid_handoff() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
@@ -564,8 +595,7 @@ mod tests {
         };
 
         let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        let (_, expected_c_sk) =
-            crate::attestation::derive_attestation_outputs(&sk, blinding);
+        let (_, expected_c_sk) = crate::attestation::derive_attestation_outputs(&sk, blinding);
 
         assert_eq!(
             handoff.attested_commitment_sk, expected_c_sk,
@@ -600,8 +630,7 @@ mod tests {
             mt_index: 0,
         };
 
-        let honest_handoff =
-            client_prepare_with_blinding(&sk, &coin, None, registered_blinding);
+        let honest_handoff = client_prepare_with_blinding(&sk, &coin, None, registered_blinding);
 
         // Attacker tries to spend with a different blinding. The handoff still
         // carries the honest `attested_commitment_sk` (so the admission's
@@ -631,21 +660,20 @@ mod tests {
     /// did not register.
     #[test]
     fn v3_scalar_reduction_collision_does_not_open_same_commitment() {
-        let sk_honest = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let sk_honest = CoinSecretKey(HashOutput([0u8; 32]));
         let blinding: Fr = OsRng.r#gen();
 
-        let (_, c_sk_honest) =
-            crate::attestation::derive_attestation_outputs(&sk_honest, blinding);
+        let (_, c_sk_honest) = crate::attestation::derive_attestation_outputs(&sk_honest, blinding);
 
-        // Same blinding, different sk byte string. (For the scalar-reduction
-        // family `sk + n·q` we'd construct a specific overflow; here a
-        // single-bit flip suffices to make the same point: different bytes
-        // ⇒ different limbs ⇒ different Poseidon image.)
-        let mut sk_evil_bytes = sk_honest.0 .0;
-        sk_evil_bytes[31] ^= 0x80; // flip the top bit of the high limb
+        // Same blinding, different sk byte string, but congruent under the
+        // exact Jubjub scalar modulus. A scalar-reducing commitment would map
+        // both byte strings to scalar zero; v3 hashes the exact byte limbs.
+        let sk_evil_bytes = JUBJUB_SCALAR_MODULUS_LE;
+        assert_eq!(reduce_once_mod_jubjub_scalar(sk_honest.0 .0), [0u8; 32]);
+        assert_eq!(reduce_once_mod_jubjub_scalar(sk_evil_bytes), [0u8; 32]);
+
         let sk_evil = CoinSecretKey(HashOutput(sk_evil_bytes));
-        let (_, c_sk_evil) =
-            crate::attestation::derive_attestation_outputs(&sk_evil, blinding);
+        let (_, c_sk_evil) = crate::attestation::derive_attestation_outputs(&sk_evil, blinding);
 
         assert_ne!(
             c_sk_honest, c_sk_evil,

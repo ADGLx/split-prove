@@ -78,10 +78,7 @@ pub fn build_wallet_attestation_preimage(
     ProofPreimage {
         inputs,
         private_transcript: Vec::new(),
-        public_transcript_inputs: wallet_attestation_public_transcript_inputs(
-            pk,
-            commitment_sk,
-        ),
+        public_transcript_inputs: wallet_attestation_public_transcript_inputs(pk, commitment_sk),
         public_transcript_outputs: Vec::new(),
         binding_input: 0.into(),
         communications_commitment: None,
@@ -98,8 +95,7 @@ pub fn wallet_attestation_public_transcript_inputs(
 ) -> Vec<Fr> {
     use midnight_coin_structure::coin::PublicKey as CoinPublicKey;
     let pk_typed = CoinPublicKey(HashOutput(pk));
-    let c_sk_fr = Fr::from_le_bytes(&commitment_sk)
-        .expect("valid Fr from commitment_sk bytes");
+    let c_sk_fr = Fr::from_le_bytes(&commitment_sk).expect("valid Fr from commitment_sk bytes");
 
     let mut inputs = Vec::new();
     extend_ops(
@@ -140,18 +136,14 @@ fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, I
 /// `compactc 0.31.0`.
 pub fn wallet_attestation_proving_data() -> ProvingKeyMaterial {
     ProvingKeyMaterial {
-        prover_key: include_bytes!(
-            "../circuits/static/wallet-attestation/wallet_attest.prover"
-        )
-        .to_vec(),
+        prover_key: include_bytes!("../circuits/static/wallet-attestation/wallet_attest.prover")
+            .to_vec(),
         verifier_key: include_bytes!(
             "../circuits/static/wallet-attestation/wallet_attest.verifier"
         )
         .to_vec(),
-        ir_source: include_bytes!(
-            "../circuits/static/wallet-attestation/wallet_attest.bzkir"
-        )
-        .to_vec(),
+        ir_source: include_bytes!("../circuits/static/wallet-attestation/wallet_attest.bzkir")
+            .to_vec(),
     }
 }
 
@@ -264,6 +256,38 @@ mod tests {
     use midnight_base_crypto::hash::HashOutput;
     use std::io::Cursor;
 
+    const JUBJUB_SCALAR_MODULUS_LE: [u8; 32] = [
+        0xb7, 0x2c, 0xf7, 0xd6, 0x5e, 0x0e, 0x97, 0xd0, 0x82, 0x10, 0xc8, 0xcc, 0x93, 0x20, 0x68,
+        0xa6, 0x00, 0x3b, 0x34, 0x01, 0x01, 0x3b, 0x67, 0x06, 0xa9, 0xaf, 0x33, 0x65, 0xea, 0xb4,
+        0x7d, 0x0e,
+    ];
+
+    fn reduce_once_mod_jubjub_scalar(mut bytes: [u8; 32]) -> [u8; 32] {
+        if le_bytes_ge(&bytes, &JUBJUB_SCALAR_MODULUS_LE) {
+            let mut borrow = 0u16;
+            for (byte, modulus_byte) in bytes.iter_mut().zip(JUBJUB_SCALAR_MODULUS_LE) {
+                let lhs = *byte as i16 - borrow as i16;
+                if lhs >= modulus_byte as i16 {
+                    *byte = (lhs - modulus_byte as i16) as u8;
+                    borrow = 0;
+                } else {
+                    *byte = (lhs + 256 - modulus_byte as i16) as u8;
+                    borrow = 1;
+                }
+            }
+            debug_assert_eq!(borrow, 0);
+        }
+        bytes
+    }
+
+    fn le_bytes_ge(lhs: &[u8; 32], rhs: &[u8; 32]) -> bool {
+        lhs.iter()
+            .zip(rhs.iter())
+            .rev()
+            .find_map(|(a, b)| (a != b).then_some(a > b))
+            .unwrap_or(true)
+    }
+
     #[test]
     fn derive_outputs_matches_compact_ir() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
@@ -319,22 +343,18 @@ mod tests {
 
     #[test]
     fn scalar_reduction_collision_does_not_open_same_commitment() {
-        // Plan / Verification §3 — confirm the soundness claim that `sk' =
-        // sk + n·q` produces a different `(sk_lo, sk_hi)` limb pair and
-        // therefore a different `C_sk`. The range check on the high limb
-        // (248 bits) does NOT reject sk' on its own; what rejects the attack
-        // is that the Poseidon commitment changes.
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        // Plan / Verification §3 — use the actual Jubjub scalar modulus `q`.
+        // A naive `sk_to_scalar(sk)` design would reduce both byte strings
+        // below to scalar zero. The v3 Poseidon commitment hashes the exact
+        // byte limbs, so `0` and `q` must produce different commitments.
+        let sk = CoinSecretKey(HashOutput([0u8; 32]));
         let r: Fr = OsRng.r#gen();
         let (_pk, c_sk_honest) = derive_attestation_outputs(&sk, r);
 
-        // Produce a tampered 32-byte secret that simply differs in one bit.
-        // Different bytes → different limbs → different Poseidon image. The
-        // exact `sk + n·q` form is byte-modeled here; the property under test
-        // is "two distinct 32-byte sk values give distinct commitments", which
-        // is what the soundness argument relies on.
-        let mut sk_evil_bytes = sk.0 .0;
-        sk_evil_bytes[0] ^= 1;
+        let sk_evil_bytes = JUBJUB_SCALAR_MODULUS_LE;
+        assert_eq!(reduce_once_mod_jubjub_scalar(sk.0 .0), [0u8; 32]);
+        assert_eq!(reduce_once_mod_jubjub_scalar(sk_evil_bytes), [0u8; 32]);
+
         let sk_evil = CoinSecretKey(HashOutput(sk_evil_bytes));
         let (_pk_evil, c_sk_evil) = derive_attestation_outputs(&sk_evil, r);
 
