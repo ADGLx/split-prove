@@ -1,0 +1,25 @@
+// Spike #5: combined Pedersen open as it would appear in sk_prove_v3.
+// Three independent generators (derived via hashToCurve from distinct domain
+// tags) and three scalar multiplications + two additions. This is what the
+// per-spend circuit would pay to open C_sk under the Pedersen variant.
+
+import CompactStandardLibrary;
+
+ledger out: JubjubPoint;
+
+export circuit bench_pedersen_open(sk_lo: Field, sk_hi: Field, r: Field): [] {
+  const G_sk_lo = hashToCurve<[Bytes<32>, Uint<16>]>(
+    [pad(32, "midnight:split-sk-lo[v1]") as Bytes<32>, 0 as Uint<16>]
+  );
+  const G_sk_hi = hashToCurve<[Bytes<32>, Uint<16>]>(
+    [pad(32, "midnight:split-sk-hi[v1]") as Bytes<32>, 0 as Uint<16>]
+  );
+  const G_r = hashToCurve<[Bytes<32>, Uint<16>]>(
+    [pad(32, "midnight:split-blind[v1]") as Bytes<32>, 0 as Uint<16>]
+  );
+  const C = ecAdd(
+    ecAdd(ecMul(G_sk_lo, sk_lo), ecMul(G_sk_hi, sk_hi)),
+    ecMul(G_r, r)
+  );
+  out = disclose(C);
+}

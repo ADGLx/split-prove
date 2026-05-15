@@ -1,17 +1,41 @@
-// Client-side circuit: proves sk → (pk, nullifier, coinBindingTag).
-// The server computes/proves coinCommitment from (coin, pk), so the wallet
-// no longer proves the canonical coin commitment locally.
-// Server verifies this proof off-chain to confirm the derived values are correct.
+// Client-side circuit, split-prove v3.
+//
+// Replaces the v2 sk_proof, which paid SHA-256(sk) on every spend, with an
+// open of a one-time-per-wallet Poseidon commitment `C_sk`. The canonical
+// `pk = persistentHash("midnight:zswap-pk[v1]", sk)` is now proven by the
+// separate `wallet_attestation.compact` circuit at wallet-setup time and
+// re-verified per-spend in the Rust admission code by cross-checking the
+// public outputs of both proofs. See
+// /Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md
+// for the soundness argument.
+//
+// What this circuit proves per spend:
+//   1. The wallet knows `(sk, r)` that opens the registered `C_sk` —
+//      `commitmentSk = transientHash("midnight:sk-commit[v1]", sk, r)`.
+//   2. The canonical nullifier was derived from *that* same `sk` —
+//      `nullifier = persistentHash("midnight:zswap-cn[v1]", coin, true, sk)`.
+//   3. The same `pk` carried in the handoff is the coin owner key used by
+//      the server's `coinBindingTag` and `coinCommitment` —
+//      `coinBindingTag = transientHash("midnight:zswap-split-coin[v1]", coin, pk)`.
+//
+// `pk` is disclosed as a witness (not recomputed from sk); the admission
+// verifier asserts it equals the attestation's `pk` public output, and the
+// attestation already binds that `pk` to the unique `sk` opening `C_sk`.
+//
+// Soundness summary:
+//   * Poseidon binding on `(sk, r)` ⇒ at most one `sk` opens the registered
+//     `C_sk` (computationally, under transientHash collision resistance).
+//   * The same `sk` bit witnesses are consumed by the SHA-256 nullifier
+//     gadget AND by the Poseidon C_sk gadget — Compact's natural compilation
+//     reuses the constrain_bits-decomposed limbs of `sk.bytes` across both.
+//   * The canonical nullifier formula is byte-identical to stock Zswap, so
+//     a stock spend and a split spend of the same coin still collide in the
+//     ledger nullifier set.
 
 import CompactStandardLibrary;
 
 struct ZswapCoinSecretKey {
   bytes: Bytes<32>;
-}
-
-struct PublicKeyPreimage {
-  sep: Bytes<21>,
-  secretKey: ZswapCoinSecretKey,
 }
 
 struct SplitCoinBindingPreimage {
@@ -27,39 +51,58 @@ struct CoinPreimage {
   data: Bytes<32>,
 }
 
-// Public outputs: pk, nullifier, coinBindingTag.
+struct SkCommitPreimage {
+  sep: Field,
+  secretKey: ZswapCoinSecretKey,
+  blinding: Field,
+}
+
+// Public outputs: pk, nullifier, coinBindingTag, commitmentSk.
 ledger publicKey: ZswapCoinPublicKey;
 ledger nullifier: Bytes<32>;
 ledger coinBindingTag: Field;
+ledger commitmentSk: Field;
 
 export circuit sk_prove(
   sk: ZswapCoinSecretKey,
+  pk: ZswapCoinPublicKey,
+  r: Field,
   coin: ShieldedCoinInfo
 ): [] {
-  // Derive public key from secret key
-  const pk = ZswapCoinPublicKey {
-    bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
-      sep: "midnight:zswap-pk[v1]",
-      secretKey: sk,
-    })
-  };
+  // 1. Disclose pk from witness. NOT re-derived from sk in-circuit —
+  //    the attestation circuit (run once at wallet setup) proves
+  //    `pk = persistentHash(sep, sk)` and the admission verifier
+  //    cross-checks `attested_pk == this disclosed pk`.
   publicKey = disclose(pk);
 
-  // Match the canonical Zswap nullifier exactly so split and non-split spends
-  // collide in the same ledger nullifier set.
-  const nul = persistentHash<CoinPreimage>(
+  // 2. Canonical Zswap nullifier — byte-identical to stock so split and
+  //    non-split spends of the same coin collide in the same on-ledger
+  //    nullifier set. Uses the bit-decomposed `sk` witnesses that Compact
+  //    also feeds to the C_sk hash below.
+  nullifier = disclose(persistentHash<CoinPreimage>(
     CoinPreimage {
       sep: "midnight:zswap-cn[v1]",
       info: coin,
       dataType: true,
       data: sk.bytes,
-    });
-  nullifier = disclose(nul);
+    }));
 
+  // 3. Coin-binding tag — unchanged from v2. Links this client proof and
+  //    the server's spend-split proof to the same `(coin, pk)`.
   coinBindingTag = disclose(transientHash<SplitCoinBindingPreimage>(
     SplitCoinBindingPreimage {
       sep: "midnight:zswap-split-coin[v1]" as Field,
       coin: coin,
       publicKey: pk,
     }));
+
+  // 4. Open the per-wallet Poseidon commitment to `sk`. Recomputed in-circuit
+  //    from witness `(sk, r)`; the admission verifier cross-checks this
+  //    against the attestation's `commitmentSk` public output. Cheaper than
+  //    a Pedersen open by ~60× on this Compact lowering (see bench/SPIKE_RESULTS.md).
+  commitmentSk = disclose(transientHash<SkCommitPreimage>(SkCommitPreimage {
+    sep: "midnight:sk-commit[v1]" as Field,
+    secretKey: sk,
+    blinding: r,
+  }));
 }

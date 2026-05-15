@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../",
+  "sources": ["bench/bench_pedersen_open.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAKA;;;;;;;;;;MAIA,AAAA,mBAeC;;;;;cAfkC,OAAY;cAAE,OAAY;cAAE,GAAQ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;yCAApC,OAAY,+BAAE,OAAY,+BAAE,GAAQ;;;;;;;;;qDAApC,OAAY;qDAAE,OAAY;qDAAE,GAAQ;;;OAetE;;;;;;;;GACA;EApBD;;;;;;;;;;;;;;;;;;;;;;;;;;IAEA;;;;;;;;;yEAAwB;;;;;;;GAkBvB;ECzBD,AAAA,SAAA,KAAA;4CAAA,KAAA;;;EAAA,AAAA,SAAA,KAAA;4CAAA,KAAA;;;EAAA,AAAA,eAAA;iEAAA;;;EDSA,AAAA,sBAeC,4BAfkC,OAAY,EAAE,OAAY,EAAE,GAAQ;UAC/D,SAEL;;UACK,SAEL;;UACK,KAEL;;UACK,GAGL,6CAFa,SAAO,EAAE,OAAK;0DAAS,SAAO,EAAE,OAAK;4CAC3C,KAAG,EAAE,GAAC;IAEd;;;;;;;2HAAe,GAAC;;yEAAb;;GACJ;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

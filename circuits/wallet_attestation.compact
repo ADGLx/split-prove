@@ -1,0 +1,61 @@
+// One-time wallet attestation for split-prove v3.
+//
+// Run once per wallet at setup. Binds the canonical Zswap public key
+// `pk = persistentHash("midnight:zswap-pk[v1]", sk)` to a Poseidon commitment
+// `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)` over the *same*
+// 32-byte secret key bit witnesses.
+//
+// The per-spend circuit (sk_prove_v3) later opens C_sk to recover the unique
+// `sk` and computes the canonical nullifier from it. SHA-256 over sk is paid
+// here, *once*, instead of on every spend. See
+// /Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md
+// for the full soundness argument.
+//
+// Both `pk` and `C_sk` are disclosed as public outputs; the node admission
+// verifier cross-checks them against the bundled split-spend proof.
+
+import CompactStandardLibrary;
+
+struct ZswapCoinSecretKey {
+  bytes: Bytes<32>;
+}
+
+struct PublicKeyPreimage {
+  sep: Bytes<21>,
+  secretKey: ZswapCoinSecretKey,
+}
+
+struct SkCommitPreimage {
+  sep: Field,
+  secretKey: ZswapCoinSecretKey,
+  blinding: Field,
+}
+
+// Public outputs.
+ledger publicKey: ZswapCoinPublicKey;
+ledger commitmentSk: Field;
+
+export circuit wallet_attest(
+  sk: ZswapCoinSecretKey,
+  r: Field
+): [] {
+  // Canonical Zswap public key — byte-identical to stock and to today's
+  // sk_prove. Compact will reuse the bit witnesses for `sk` in the SHA-256
+  // gadget below for the Poseidon hash too, so both bind the same byte string.
+  publicKey = disclose(ZswapCoinPublicKey {
+    bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
+      sep: "midnight:zswap-pk[v1]",
+      secretKey: sk,
+    })
+  });
+
+  // Poseidon commitment to `sk` (split internally by Compact into limbs that
+  // each fit in Fr without modular reduction). Range-checked via constrain_bits
+  // on each limb of `sk.bytes`. Binding under Poseidon collision resistance.
+  // Hiding under Poseidon preimage resistance and a fresh random `r`.
+  commitmentSk = disclose(transientHash<SkCommitPreimage>(SkCommitPreimage {
+    sep: "midnight:sk-commit[v1]" as Field,
+    secretKey: sk,
+    blinding: r,
+  }));
+}

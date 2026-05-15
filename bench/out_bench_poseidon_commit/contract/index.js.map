@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../",
+  "sources": ["bench/bench_poseidon_commit.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAMA;;;;;;;;;;MAUA,AAAA,qBAIC;;;;;cAJoC,OAAY;cAAE,OAAY;cAAE,GAAQ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;yCAApC,OAAY,+BAAE,OAAY,+BAAE,GAAQ;;;;;;;;;uDAApC,OAAY;uDAAE,OAAY;uDAAE,GAAQ;;;OAIxE;;;;;;;;GACA;EAfD;;;;;;;;;;;;;;;;;;;;;;;;;;IAQA;;;;;;;;;yEAAkB;;;;;;;GAOjB;ECrBD,AAAA,iBAAA;mEAAA;;;EDgBA,AAAA,wBAIC,4BAJoC,OAAY,EAAE,OAAY,EAAE,GAAQ;UACvE,KAAG,kCACyB,OAAK,SAAS,OAAK,KAAK,GAAC;IADrD;;;;;;;2HAAA,KAAG;;yEAAA;;GAGJ;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

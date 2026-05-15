@@ -1,0 +1,19 @@
+// Spike #3 (baseline): cost of a single transientHash over a few field inputs.
+// This is the Poseidon-based alternative commit if Pedersen turns out too
+// expensive in-circuit (Implementation step 0 in the plan).
+
+import CompactStandardLibrary;
+
+struct ThreeFields {
+  a: Field,
+  b: Field,
+  c: Field,
+}
+
+ledger out: Field;
+
+export circuit bench_transient_hash(a: Field, b: Field, c: Field): [] {
+  out = disclose(transientHash<ThreeFields>(
+    ThreeFields { a: a, b: b, c: c }
+  ));
+}

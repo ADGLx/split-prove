@@ -1,0 +1,16 @@
+// Spike #1: cost of a single variable-base ecMul.
+// The base point P comes from hashToCurve(some_const_input) — runtime-derived,
+// so the proving stack treats this as variable-base MSM regardless of the
+// fact that the inputs are constants. This is the baseline our Pedersen open
+// would pay per scalar mul if the zkir does not detect compile-time constants.
+
+import CompactStandardLibrary;
+
+ledger out: JubjubPoint;
+
+export circuit bench_ec_mul_var(scalar: Field): [] {
+  const P = hashToCurve<[Bytes<32>, Uint<16>]>(
+    [pad(32, "midnight:bench-G[v1]") as Bytes<32>, 0 as Uint<16>]
+  );
+  out = disclose(ecMul(P, scalar));
+}

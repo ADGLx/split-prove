@@ -4,7 +4,8 @@
 //! and proves using `prove_split()` with committed instances.
 
 use crate::client::{
-    handoff_coin_binding_tag_fr, handoff_commitment, handoff_nullifier, handoff_pk, ClientHandoff,
+    handoff_coin_binding_tag_fr, handoff_commitment, handoff_commitment_sk_fr, handoff_nullifier,
+    handoff_pk, ClientHandoff,
 };
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
@@ -37,6 +38,17 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         .map(Proof)
         .ok_or("client derivation proof is required for split spend preimages")?;
 
+    // v3: one-time wallet attestation proof. Travels alongside the per-spend
+    // client proof; the node verifier re-checks it before admitting the bundle.
+    let attestation_proof = handoff
+        .attestation_proof
+        .as_deref()
+        .map(hex::decode)
+        .transpose()
+        .map_err(|e| format!("decode attestation proof: {e}"))?
+        .map(Proof)
+        .ok_or("attestation proof is required for split spend preimages (v3)")?;
+
     Input::new_split(
         &mut OsRng,
         &coin,
@@ -45,7 +57,9 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         handoff_commitment(handoff),
         handoff_pk(handoff),
         handoff_coin_binding_tag_fr(handoff),
+        handoff_commitment_sk_fr(handoff),
         client_derivation_proof,
+        attestation_proof,
         contract,
         tree,
     )
@@ -113,6 +127,12 @@ mod tests {
 
     fn attach_dummy_client_proof(handoff: &mut ClientHandoff) {
         handoff.client_derivation_proof = Some(hex::encode([]));
+        // v3 requires the attestation proof on every split spend; the
+        // build_spend_preimage path treats it as opaque bytes (no verification
+        // happens here — that's the node admission verifier's job), so an
+        // empty proof is fine for unit tests that only exercise preimage
+        // construction.
+        handoff.attestation_proof = Some(hex::encode([]));
     }
 
     #[test]
@@ -157,6 +177,8 @@ mod tests {
             nullifier: [2u8; 32],
             pk: [3u8; 32],
             commitment_hash: [4u8; 32],
+            attested_commitment_sk: [0u8; 32],
+            attestation_proof: None,
             coin_value: 123,
             coin_color: token.0 .0,
             coin_nonce: [5u8; 32],

@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../",
+  "sources": ["bench/bench_transient_hash.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAIA;;;;;;;;;;MAUA,AAAA,oBAIC;;;;;cAJmC,GAAQ;cAAE,GAAQ;cAAE,GAAQ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;yCAA5B,GAAQ,+BAAE,GAAQ,+BAAE,GAAQ;;;;;;;;;sDAA5B,GAAQ;sDAAE,GAAQ;sDAAE,GAAQ;;;OAI/D;;;;;;;;GACA;EAfD;;;;;;;;;;;;;;;;;;;;;;;;;;IAQA;;;;;;;;;yEAAkB;;;;;;;GAOjB;ECnBD,AAAA,iBAAA;mEAAA;;;EDcA,AAAA,uBAIC,4BAJmC,GAAQ,EAAE,GAAQ,EAAE,GAAQ;UAC9D,KAAG,8BACgB,GAAC,KAAK,GAAC,KAAK,GAAC;IADhC;;;;;;;2HAAA,KAAG;;yEAAA;;GAGJ;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

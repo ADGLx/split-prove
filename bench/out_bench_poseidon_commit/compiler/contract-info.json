@@ -1,0 +1,52 @@
+{
+  "compiler-version": "0.31.0",
+  "language-version": "0.23.0",
+  "runtime-version": "0.16.0",
+  "circuits": [
+    {
+      "name": "bench_poseidon_commit",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+        {
+          "name": "sk_lo",
+          "type": {
+            "type-name": "Field"
+          }
+        },
+        {
+          "name": "sk_hi",
+          "type": {
+            "type-name": "Field"
+          }
+        },
+        {
+          "name": "r",
+          "type": {
+            "type-name": "Field"
+          }
+        }
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    }
+  ],
+  "witnesses": [
+  ],
+  "contracts": [
+  ],
+  "ledger": [
+    {
+      "name": "out",
+      "index": 0,
+      "exported": false,
+      "storage": "Cell",
+      "type": {
+        "type-name": "Field"
+      }
+    }
+  ]
+}

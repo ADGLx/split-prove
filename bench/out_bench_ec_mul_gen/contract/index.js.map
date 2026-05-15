@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../",
+  "sources": ["bench/bench_ec_mul_gen.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAGA;;;;;;;;;;MAIA,AAAA,gBAEC;;;;;cAF+B,QAAa;;;;;;;;;;;;;;;;;;yCAAb,QAAa;;;;;;;;;kDAAb,QAAa;;;OAE5C;;;;;;GACA;EAPD;;;;;;;;;;;;;;;;;;;;;;;;;;IAEA;;;;;;;;;yEAAwB;;;;;;;GAKvB;ECVD,AAAA,kBAAA;qDAAA;;;EDOA,AAAA,mBAEC,4BAF+B,QAAa;UAC3C,KAAG,0BAA2B,QAAM;IAApC;;;;;;;2HAAA,KAAG;;yEAAA;;GACJ;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

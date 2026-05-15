@@ -1,0 +1,21 @@
+// Spike #6: Poseidon (transientHash) commit alternative to Pedersen.
+// Commit C_sk = transientHash(sk_lo, sk_hi, r). Binding under Poseidon
+// collision resistance, hiding under preimage resistance. Drop-in
+// replacement for the Pedersen open if Compact's ecMul lowering is too
+// expensive — which the other benches show it is by ~16x.
+
+import CompactStandardLibrary;
+
+struct SkCommitPreimage {
+  sk_lo: Field,
+  sk_hi: Field,
+  r: Field,
+}
+
+ledger out: Field;
+
+export circuit bench_poseidon_commit(sk_lo: Field, sk_hi: Field, r: Field): [] {
+  out = disclose(transientHash<SkCommitPreimage>(
+    SkCommitPreimage { sk_lo: sk_lo, sk_hi: sk_hi, r: r }
+  ));
+}

@@ -1,0 +1,10 @@
+// Spike #2: cost of a single fixed-base ecMulGenerator (standard Jubjub generator).
+// This is the cheapest EC scalar mul Compact exposes today.
+
+import CompactStandardLibrary;
+
+ledger out: JubjubPoint;
+
+export circuit bench_ec_mul_gen(scalar: Field): [] {
+  out = disclose(ecMulGenerator(scalar));
+}

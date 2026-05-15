@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../",
+  "sources": ["bench/bench_persistent_hash_sk.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAIA;;;;;;;;;;MAaA,AAAA,wBAOC;;;;;cAPuC,IAAsB;;;;;;;;;;;;;;;;;;yCAAtB,IAAsB;;;;;;;;;0DAAtB,IAAsB;;;OAO7D;;;;;;;;GACA;EArBD;;;;;;;;;;;;;;;;;;;;;;;;;;IAWA;;;;;;;;;yEAA+B;;;;;;;GAU9B;ECzBD,AAAA,kBAAA;oEAAA;;;EDiBA,AAAA,2BAOC,4BAPuC,IAAsB;UAC5D,KAAG;;;0DAGY,IAAE;IAHjB;;;;;;;2HAAA,KAAG;;yEAAA;;GAMJ;;;;;;;;;;;;;;;;;;;;;;;;;"
+}

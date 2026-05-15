@@ -12,5 +12,6 @@
 //! let proof = server_prove_split(&ir, &params, &pk, &input.proof, sk_field_count)?;
 //! ```
 
+pub mod attestation;
 pub mod client;
 pub mod server;

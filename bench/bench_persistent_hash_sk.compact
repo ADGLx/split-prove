@@ -1,0 +1,25 @@
+// Spike #4 (reference): cost of the SHA-256 we want to remove —
+// pk = persistentHash("midnight:zswap-pk[v1]", sk). This isolates exactly
+// what step (1) of today's sk_proof.compact costs.
+
+import CompactStandardLibrary;
+
+struct PublicKeyPreimage {
+  sep: Bytes<21>,
+  secretKey: ZswapCoinSecretKey,
+}
+
+struct ZswapCoinSecretKey {
+  bytes: Bytes<32>,
+}
+
+ledger out: ZswapCoinPublicKey;
+
+export circuit bench_persistent_hash_sk(sk: ZswapCoinSecretKey): [] {
+  out = disclose(ZswapCoinPublicKey {
+    bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
+      sep: "midnight:zswap-pk[v1]",
+      secretKey: sk,
+    })
+  });
+}

@@ -50,6 +50,9 @@ pub struct ClientHandoff {
 
     /// Whether this is a contract-owned coin
     pub is_contract: Option<midnight_coin_structure::contract::ContractAddress>,
+
+    /// v3: Poseidon commitment to sk, bound at wallet-attestation time.
+    pub commitment_sk: Fr,
 }
 
 /// CLIENT SIDE: compute all sk-dependent values.
@@ -78,6 +81,14 @@ pub fn client_prepare(
 
     let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
+    // Demo placeholder: in real wallet use, `commitment_sk` comes from the
+    // one-time WalletAttestation (`attestation::register_wallet`). The demo
+    // skips the attestation prover-call and stubs this to zero — the demo
+    // also passes empty proofs into `Input::new_split`, so the result is not
+    // node-verifiable. See `src/client.rs::client_prepare_with_attestation`
+    // for the production path.
+    let commitment_sk = Fr::from(0u64);
+
     ClientHandoff {
         coin_binding_tag,
         nullifier,
@@ -86,6 +97,7 @@ pub fn client_prepare(
         coin_info,
         qualified_coin_info: coin.clone(),
         is_contract,
+        commitment_sk,
     }
 }
 
@@ -109,7 +121,9 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
         handoff.commitment_hash,
         handoff.pk,
         handoff.coin_binding_tag,
-        Proof(Vec::new()),
+        handoff.commitment_sk, // v3
+        Proof(Vec::new()),     // placeholder client-derivation proof for the demo
+        Proof(Vec::new()),     // v3: placeholder attestation proof for the demo
         handoff.is_contract,
         tree,
     )
