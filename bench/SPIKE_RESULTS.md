@@ -50,7 +50,7 @@ note in the plan still applies — `sk' = sk + n·q` produces different limbs
 
 ## Projected total client-circuit cost
 
-| Component | Today | v3 with Pedersen | v3 with Poseidon (chosen) |
+| Component | Earlier internal prototype | Pedersen commitment option | Current Poseidon commitment |
 |---|---:|---:|---:|
 | pk = SHA-256(sk) | 2,815 KB | — | — |
 | nullifier = SHA-256(coin, sk) | ~2,500 KB | ~2,500 KB | ~2,500 KB |
@@ -59,7 +59,7 @@ note in the plan still applies — `sk' = sk + n·q` produces different limbs
 | Disclosures + glue | ~50 KB | ~50 KB | ~50 KB |
 | **Rough total** | **~5,400 KB** | **~3,900 KB (~30% drop)** | **~2,600 KB (~52% drop)** |
 
-(Today's measured client prover key is 5.20 MB — within rounding of the
+(The earlier measured client prover key was 5.20 MB — within rounding of the
 rough sum above.)
 
 ## Confirmation against live e2e (2026-05-15)
@@ -69,14 +69,14 @@ and attach it to every `/v2/prove-split-spend`:
 
 | Stage | Time |
 |---|---:|
-| Wallet attestation (one-time per sk) | 759 ms |
-| `clientDerivationProof` (per-spend, local) | **807 ms** |
-| `spend-split` proof (server) | 1712 ms |
+| Wallet attestation (one-time per sk) | ~0.8-0.9 s |
+| `clientDerivationProof` (per-spend, local) | **836 ms** |
+| `spend-split` proof (server) | 1720 ms |
 | Server verify client derivation | 4 ms |
-| Server / client ratio | **2.12×** |
+| Server / client ratio | **2.06×** |
 
-vs the pre-attestation baseline `clientDerivationProof = 1899 ms`, that's a
-**−57.5%** per-spend client-side drop. The 2.12× asymmetry confirms the spike
+vs the earlier no-attestation prototype `clientDerivationProof = 1899 ms`, that's a
+**−56.0%** per-spend client-side drop. The 2.06× asymmetry confirms the spike
 projection (~25–35% prover-key drop translates to ~50% proving-time drop here
 because the SHA-256 gadget dominates wall-clock more strongly than it does
 prover-key size). Transaction reached `inclusion_status: inBlock`.

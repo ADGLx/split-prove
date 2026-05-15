@@ -21,13 +21,15 @@ wallet/client
     build Merkle state/path
 
   split-prove handoff:
-    prove sk -> pk/nullifier/coinBindingTag
+    generate/reuse wallet attestation proof
+    prove sk -> nullifier/coinBindingTag/commitmentSk
     compute nullifier
     read selected output commitmentHash
     package coin metadata + Merkle state/path
     POST /v2/prove-split-spend
 
 proof server
+  pre-verify wallet attestation and client derivation proofs
   reconstruct QualifiedCoinInfo
   recompute commitmentHash = H(coin, pk) and reject mismatches
   load Merkle tree/path
@@ -37,26 +39,28 @@ proof server
   prove midnight/zswap/spend-split
   return proofHex + provedInputHex
 
-preview chain
+local chain
+  verify attestation, client-derivation, and spend-split proofs in node admission
   read through the indexer
   Dust-balance and submit through the wallet SDK/raw RPC bridge
 ```
 
-The live e2e always spends the selected preview-chain shielded output and creates
+The live e2e always spends the selected local-chain shielded output and creates
 a shielded output for `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`. The token
 movement is full split-send only: client derivation proof -> server split proof
 -> split transaction assembly -> wallet SDK Dust balancing -> submission.
 
 ### Interpreting Proof Timings
 
-The wallet-side client-derivation circuit is intentionally smaller than the server split-spend circuit. Mock-compiling the shipped artifacts gives:
+The wallet-side per-spend client-derivation circuit is intentionally smaller than the server split-spend circuit. The current artifacts are:
 
-| Circuit | k | rows | prover key |
-|---|---:|---:|---:|
-| `sk_prove` / client derivation | 14 | 8,822 | 5.20 MB |
-| `spend-split` / server split spend | 14 | 9,756 | 5.74 MB |
+| Circuit | prover key | Role |
+|---|---:|---|
+| `sk_prove` / client derivation | 2.82 MB | per spend, wallet-local |
+| `wallet_attest` / wallet attestation | 2.82 MB | one time per `sk`, wallet-local |
+| `spend-split` / server split spend | 5.74 MB | per spend, proof server |
 
-The client proof now contains only the `sk`-dependent relations: `pk = H_persistent(sk)`, canonical `nullifier = H_persistent(coin, sk)`, and `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The e2e report treats these two proof durations as the primary split-prove comparison and separates out scan, handoff overhead, output proving, Dust balancing, and submit time because those are full transaction workflow costs. A small local chain can reduce scan/path-building time, but it does not change these circuit sizes.
+The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
 
 ## Important Files
 
@@ -75,10 +79,11 @@ Use the local Compact CLI directly when regenerating the split-prove artifacts:
 
 ```bash
 compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
+compact compile --no-communications-commitment circuits/wallet_attestation.compact /tmp/wallet-attest-compile
 compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
 ```
 
-Copy the generated client derivation artifacts into `circuits/static/client-derivation/`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+Copy the generated client derivation artifacts into `circuits/static/client-derivation/` and the wallet attestation artifacts into `circuits/static/wallet-attestation/`. Mirror the verifier keys needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier` and `deps/midnight-ledger/zswap/static/wallet-attestation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
 
 ## Environment
 
@@ -88,19 +93,20 @@ Create `.env`:
 cp .env.example .env
 ```
 
-Set either a recovery phrase or a direct zswap seed:
+Use the local-dev defaults from `.env.example`; the `MIDNIGHT_PREVIEW_*` prefix is historical and still targets the local undeployed network for this PoC:
 
 ```dotenv
-MIDNIGHT_PREVIEW_INDEXER_WS=wss://indexer.preview.midnight.network/api/v4/graphql/ws
-MIDNIGHT_PREVIEW_NODE_WS=wss://rpc.preview.midnight.network
-MIDNIGHT_PREVIEW_NETWORK_ID=preview
+MIDNIGHT_PREVIEW_NODE_WS=ws://127.0.0.1:9944
+MIDNIGHT_PREVIEW_INDEXER_HTTP=http://127.0.0.1:8088/api/v4/graphql
+MIDNIGHT_PREVIEW_INDEXER_WS=ws://127.0.0.1:8088/api/v4/graphql/ws
+MIDNIGHT_PREVIEW_NETWORK_ID=undeployed
 
-MIDNIGHT_PREVIEW_RECOVERY_PHRASE="word1 word2 ... word24"
+MIDNIGHT_PREVIEW_RECOVERY_PHRASE="<local-dev funded test phrase>"
 MIDNIGHT_PREVIEW_ACCOUNT=0
 MIDNIGHT_PREVIEW_ZSWAP_KEY_SCAN_LIMIT=1
 MIDNIGHT_PREVIEW_ZSWAP_EVENT_LIMIT=50000
 MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver shielded address>
-MIDNIGHT_PREVIEW_TRANSFER_AMOUNT=500000000
+MIDNIGHT_PREVIEW_TRANSFER_AMOUNT=200000000
 MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc
 
 MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
@@ -169,17 +175,16 @@ npm install
 Run the e2e command:
 
 ```bash
-cargo run --offline -p midnight-proof-server --bin preview-split-prove \
-  --manifest-path deps/midnight-ledger/Cargo.toml
+make e2e
 ```
 
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=1622 input_value=50000000000 transfer_value=500000000 change_value=49500000000 token=<token-type> recipient=<shielded-address> status=proofBuilt client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars>
+split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> well_formed=skipped inclusion=inBlock block_hash=<hash>
 ```
 
-By default the command starts a local proof server on a random port. To use an already running proof server:
+The underlying preview driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:
 
 ```bash
 cargo run --offline -p midnight-proof-server --bin preview-split-prove \
@@ -255,6 +260,8 @@ Request shape:
   "contractAddress": null,
   "zswapState": "<serialized zswap state hex>",
   "clientDerivationProof": "<serialized client derivation proof hex>",
+  "attestedCommitmentSk": "<32-byte field hex>",
+  "attestationProof": "<serialized wallet attestation proof hex>",
   "prove": true
 }
 ```
