@@ -97,7 +97,7 @@ cargo run --release -p midnight-zswap \
   --bin split_wrapper_keygen
 ```
 
-The wrapper currently requires K20 parameters; K19 did not have enough rows for the three-proof recursive relation. The keygen writes `deps/midnight-ledger/zswap/static/spend-split-wrapper.{prover,verifier}` and `deps/midnight-ledger/transient-crypto/static/bls_midnight_2p20.verifier` plus sha256 sidecars. The proof-server loads the large wrapper prover key, while node verification loads the wrapper verifier key and verifier parameters.
+The wrapper currently requires K20 parameters; K19 did not have enough rows for the three-proof recursive relation. The keygen writes `deps/midnight-ledger/zswap/static/spend-split-wrapper.{prover,verifier}` and `deps/midnight-ledger/transient-crypto/static/bls_midnight_2p20.verifier` plus sha256 sidecars. The large `spend-split-wrapper.prover` file is intentionally gitignored because it is generated setup data and exceeds GitHub's normal file limit. The proof-server needs that local file before it can prove wrapper spends; node verification only needs the tracked wrapper verifier key and verifier parameters.
 
 ## Environment
 
