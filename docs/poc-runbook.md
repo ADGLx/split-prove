@@ -35,12 +35,12 @@ proof server
   load Merkle tree/path
   reject handoffs whose commitment does not reproduce the tree root
   prove coinCommitment, Merkle membership, nullifier insertion, coinBindingTag, and value commitment
-  call Input::new_split
   prove midnight/zswap/spend-split
-  return proofHex + provedInputHex
+  prove recursive wrapper over attestation + client derivation + spend-split
+  return wrapper proof bytes and proved input bytes
 
 local chain
-  verify attestation, client-derivation, and spend-split proofs in node admission
+  verify the wrapper proof and aggregate accumulator in node admission
   read through the indexer
   Dust-balance and submit through the wallet SDK/raw RPC bridge
 ```
@@ -59,8 +59,11 @@ The wallet-side per-spend client-derivation circuit is intentionally smaller tha
 | `sk_prove` / client derivation | 2.82 MB | per spend, wallet-local |
 | `wallet_attest` / wallet attestation | 2.82 MB | one time per `sk`, wallet-local |
 | `spend-split` / server split spend | 5.74 MB | per spend, proof server |
+| `spend-split-wrapper` / recursive wrapper | 1.4 GB | per spend, proof server |
 
-The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The wrapper proof recursively verifies the three inner proofs and hides `pk`, `commitmentSk`, `coinBindingTag`, and `coinCommitment` from ledger/public admission.
+
+The recursive privacy-wrapper branch requires Poseidon-transcript proof generation because Midnight's recursive verifier gadget uses Poseidon transcript challenges. Older Blake2b-transcript direct split proof bytes are not accepted by the wrapper. The e2e report treats the per-spend client proof, server split proof, and wrapper proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
 
 ## Important Files
 
@@ -69,6 +72,7 @@ The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_tran
 - `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs`: runnable preview e2e command.
 - `deps/midnight-ledger/zswap/src/construct.rs`: `new_split` constructors.
 - `deps/midnight-ledger/zswap/src/prove.rs`: split circuit key resolution.
+- `deps/midnight-ledger/zswap/src/split_wrapper.rs`: recursive wrapper relation, envelope encoding, and wrapper verifier/prover helpers.
 - `deps/midnight-ledger/zswap/static/*split*`: local split proving artifacts.
 - `tools/derive_midnight_zswap_seed.mjs`: temporary phrase-to-zswap-seed helper for the PoC.
 - `tools/preview_balance_submit_split_tx.mjs`: wallet SDK Dust balancing and submit bridge.
@@ -84,6 +88,16 @@ compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-
 ```
 
 Copy the generated client derivation artifacts into `circuits/static/client-derivation/` and the wallet attestation artifacts into `circuits/static/wallet-attestation/`. Mirror the verifier keys needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier` and `deps/midnight-ledger/zswap/static/wallet-attestation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+
+Regenerate the recursive wrapper artifacts after changing the wrapper relation or inner verifier keys:
+
+```bash
+cargo run --release -p midnight-zswap \
+  --manifest-path deps/midnight-ledger/Cargo.toml \
+  --bin split_wrapper_keygen
+```
+
+The wrapper currently requires K20 parameters; K19 did not have enough rows for the three-proof recursive relation. The keygen writes `deps/midnight-ledger/zswap/static/spend-split-wrapper.{prover,verifier}` and `deps/midnight-ledger/transient-crypto/static/bls_midnight_2p20.verifier` plus sha256 sidecars. The proof-server loads the large wrapper prover key, while node verification loads the wrapper verifier key and verifier parameters.
 
 ## Environment
 
@@ -146,7 +160,7 @@ The local chain uses `network_id=undeployed` and exposes `9944`, `8088`, and
 ### Rebuilt Indexer
 
 The compose default for `MIDNIGHT_INDEXER_IMAGE` is
-`split-prove/indexer-standalone:local`, which is the v4.0.1 indexer rebuilt
+`split-prove/indexer-standalone:local`, which is the 4.0.1 indexer rebuilt
 against `deps/midnight-ledger` so its Zswap verifier matches the rebuilt node.
 Build it once with:
 

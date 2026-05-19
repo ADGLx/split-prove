@@ -33,19 +33,31 @@ The proof server generates `pi_spend`. It proves:
 - the declared nullifier is inserted;
 - the value commitment and spend rules are valid.
 
-The server receives public values, coin metadata, Merkle data, and proofs. It does not receive `sk` or the attestation blinding value `r`.
+The server receives handoff values, coin metadata, Merkle data, and proofs. It does not receive `sk` or the attestation blinding value `r`.
+
+After generating `pi_spend`, the proof server generates `pi_wrap`, a recursive wrapper proof. The wrapper verifies `pi_attest`, `pi_sk`, and `pi_spend` privately and exposes only the normal spend admission data plus an aggregate accumulator.
 
 ### Transaction submission
 
-The patched node verifies `pi_attest`, `pi_sk`, and `pi_spend`. It also checks that the shared public values match across the proofs:
+The patched node verifies the recursive wrapper proof and checks its aggregate accumulator. The node-visible wrapper public inputs are:
 
-- `pk`;
-- `C_sk`;
 - `nullifier`;
-- `coinBindingTag`;
-- `coinCommitment`.
+- Merkle root;
+- value commitment;
+- contract address/none;
+- segment.
 
-The transaction is accepted only if all proofs verify and all shared values agree.
+The split-only linkage values `pk`, `C_sk`, `coinBindingTag`, and `coinCommitment` are private wrapper witnesses. They are still seen by the proof server as part of the current handoff, but they are no longer ledger/public fields.
+
+The transaction is accepted only if the wrapper proof verifies, the aggregate accumulator checks against the fixed inner verifier-key bases, and the normal spend admission inputs match the transaction.
+
+## Current Tradeoff
+
+The earlier direct split bundle fixed the proof-server trust issue by making the node verify all three proofs directly, but it exposed stable split-only linkage values in the ledger-visible proof envelope. The recursive wrapper fixes that public privacy leak: ledger admission sees one wrapper proof and an aggregate accumulator, not raw `pk`, `C_sk`, `coinBindingTag`, or `coinCommitment`.
+
+The tradeoff is proof-system compatibility. Midnight's recursive `VerifierGadget` uses a Poseidon Fiat-Shamir transcript, while the previous ledger proof path used `blake2b_simd::State`. This branch intentionally switches newly generated proofs to the Poseidon transcript so the wrapper can verify the inner proofs recursively. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
+
+This is acceptable for the independent proof-of-concept branch, but it means the branch is not wire/proof compatible with stock Midnight proof artifacts. A production version would need a migration plan, a Blake2b-compatible recursive verifier gadget, or a fully Poseidon-based proof stack agreed across ledger/prover tooling.
 
 ## Why The Wallet Proof Is Smaller
 
@@ -63,7 +75,7 @@ Yes. The client proof derives the canonical zswap nullifier, so a stock spend an
 
 ### What prevents the server from changing `pk`, `nullifier`, or coin-binding data?
 
-The ledger verifies shared public inputs across the proofs. Tampering with `pk`, `nullifier`, `coinBindingTag`, or `C_sk` breaks verification.
+The wrapper circuit constrains the private inner statements against the public spend admission inputs and shared private witnesses. Tampering with `pk`, `nullifier`, `coinBindingTag`, `coinCommitment`, or `C_sk` breaks the wrapper proof or its aggregate accumulator check.
 
 ### Why add a wallet attestation proof?
 
@@ -81,17 +93,21 @@ It was much cheaper in Compact than the Pedersen commitment option while still g
 
 No. The server receives public values and proofs, but not the secret key or attestation blinding value.
 
+### Does the ledger see `pk`, `C_sk`, `coinBindingTag`, or `coinCommitment`?
+
+No, in the recursive wrapper design. Those values are private wrapper witnesses. They remain visible to the proof server in the current handoff, so this improves ledger/public privacy rather than proof-server privacy.
+
 ### Why does this require a patched ledger?
 
-Stock nodes do not know how to decode or verify the split proof bundle, wallet attestation proof, or client derivation proof.
+Stock nodes do not know how to decode or verify the wrapper envelope, wrapper verifier key, or aggregate accumulator.
 
 ### Is this recursive proof aggregation?
 
-No. The current approach verifies multiple proofs directly in ledger admission logic instead of recursively aggregating them into one proof.
+Yes. The recursive wrapper path uses a Rust wrapper relation around `midnight-circuits::verifier::VerifierGadget` to verify the three inner proofs and publish one wrapper proof plus an aggregate accumulator.
 
 ### What is the main compatibility tradeoff?
 
-The outer zswap wire format stays mostly compatible, but nodes and indexers must run the patched verifier logic and bundled verifier keys.
+The outer zswap input shape stays mostly compatible, but the opaque proof envelope and proof transcript are not stock-compatible. Nodes and indexers must run the patched verifier logic, and split-wrapper proofs must be generated from Poseidon-transcript inner proofs. Existing Blake2b-transcript direct split bundles are rejected.
 
 ## Approaches Tried And Discarded
 
@@ -101,6 +117,7 @@ The outer zswap wire format stays mostly compatible, but nodes and indexers must
 - Using `skCommitment` as a placeholder witness in the server split circuit. It pinned almost nothing by itself, so the design shifted to explicit shared public inputs: `pk`, `nullifier`, `coinBindingTag`, and later `C_sk`.
 - Using a split-only Poseidon nullifier. It improved client proof cost, but broke stock-vs-split double-spend semantics because normal wallet spends use the canonical zswap nullifier. The fix was to make split spends prove the canonical wallet nullifier.
 - Recomputing `pk = H_persistent(sk)` inside every per-spend client proof. This was sound but too expensive; the client proof became almost as heavy as the server proof. It was replaced by a one-time wallet attestation plus a cheaper per-spend opening.
-- A v2 split bundle without wallet attestation. It could verify per-spend derivation, but did not cheaply bind the per-spend `sk` back to the canonical `pk = H(sk)` without paying that hash every spend. The v3 bundle adds `attestation_proof`.
+- A split bundle without wallet attestation. It could verify per-spend derivation, but did not cheaply bind the per-spend `sk` back to the canonical `pk = H(sk)` without paying that hash every spend. The next direct-bundle iteration added `attestation_proof`.
 - A Pedersen-style `C_sk` commitment. It was considered for the wallet attestation link, but was much more expensive than the Poseidon/transient-hash commitment in Compact, so the PoC moved to Poseidon `C_sk`.
 - Treating `sk` as a single field/scalar for commitment. That risks scalar-reduction ambiguity, so the final proof-side design uses an injective limb encoding of the 32-byte secret before committing and checking it.
+- A recursive wrapper over unchanged Blake2b-transcript direct split proofs. The wrapper circuit could be built, but `VerifierGadget` uses Poseidon transcript challenges, so the in-circuit accumulator did not match the off-circuit Blake2b proof accumulator. The branch now regenerates/proves inner material with the Poseidon transcript instead.

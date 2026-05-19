@@ -4,30 +4,30 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 | Component | Current rev | Baseline | Status |
 |---|---|---|---|
-| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger)) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
+| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger), branch `recursive-privacy-wrapper-ledger`) | `a95910c4` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
 | [deps/midnight-local-dev](../deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
-| [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) ([local](../deps/midnight-node)) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
-| [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1) ([local](../deps/midnight-indexer)) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
+| [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) ([local](../deps/midnight-node), branch `recursive-privacy-wrapper-node`) | `b3e92109` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
+| [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1) ([local](../deps/midnight-indexer)) | `3235a61` | `c90fb85` (4.0.1 release tag) | Summarised below |
 
 ---
 
 ## midnight-ledger
 
-`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta moves split admission from “trusted proof server gate” to “node verifies both proofs”.
+`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta moves split admission from a ledger-visible direct proof bundle to a recursive privacy wrapper.
 
-### Latest ledger delta: wallet attestation + ledger-verified client proof
+### Latest ledger delta: recursive split wrapper
 
-The current split-prove stack makes the node verify the wallet's proof and uses a wallet attestation to lift `pk = SHA256(sk)` out of the per-spend client circuit. The summary below describes the checked-out ledger state.
+The current split-prove stack makes the node verify one wrapper proof plus an aggregate accumulator. The wallet attestation still lifts `pk = SHA256(sk)` out of the per-spend client circuit, but the ledger no longer receives the split-only linkage values as public envelope fields. The summary below describes the checked-out ledger state.
 
 **Security model change**
-- Final split zswap inputs now carry **three** proofs and four shared public inputs inside a typed envelope encoded in the opaque zswap `Proof(Vec<u8>)`:
-  - `spend_split_proof` (server) — Merkle membership of `H(coin, pk)`, value commitment, nullifier insertion, coin_binding_tag.
-  - `client_derivation_proof` (per spend) — opens `commitment_sk` to recover sk, derives the canonical `H_persistent` nullifier from that sk, derives `coin_binding_tag` from pk.
-  - `attestation_proof` (one-time per wallet) — proves `pk = persistentHash("midnight:zswap-pk[v1]", sk)` AND `commitment_sk = transientHash("midnight:sk-commit[v1]", sk, r)` over the same sk bit witnesses.
-  - Shared public inputs: `public_key`, `coin_commitment`, `coin_binding_tag`, `commitment_sk`.
-- The rebuilt node verifies all three proofs during normal zswap `well_formed()` checks and byte-equates `pk` and `commitment_sk` across the attestation and per-spend proofs. Poseidon collision resistance + an 8/248-bit injective limb encoding of `sk` + those byte cross-checks together force the per-spend sk to be the exact 32-byte string the attestation bound to the canonical pk.
-- The proof server still pre-verifies the attestation and client-derivation proofs for fast rejection, but is no longer trusted for split admission. Bypassing the proof server no longer lets an attacker submit a valid `spend-split` proof with arbitrary `pk` / `nullifier` linkage.
+- Final split zswap inputs now carry a **wrapper envelope** encoded in the opaque zswap `Proof(Vec<u8>)`:
+  - `wrapper_proof` — recursively verifies the wallet attestation, client derivation, and spend-split proofs.
+  - `aggregate_accumulator` — checked by node admission against fixed bases derived from the inner verifier keys.
+- The wrapper's public inputs are only normal spend admission data: Merkle root, nullifier, value commitment, contract address/none, and segment.
+- `public_key`, `coin_commitment`, `coin_binding_tag`, and `commitment_sk` are private wrapper witnesses. They are no longer ledger/public fields in the proof envelope.
+- The proof server still sees the current handoff metadata and pre-verifies the attestation and client-derivation proofs for fast rejection, but is no longer trusted for ledger admission. Bypassing the proof server no longer lets an attacker submit a valid split input without a wrapper proof.
 - The client derivation circuit proves the canonical Zswap nullifier (`midnight:zswap-cn[v1]`), so a stock spend and a split spend of the same coin still collide in the ledger nullifier set. A discarded internal Poseidon-nullifier experiment broke cross-path double-spend; the current design only moves **pk derivation** out of the per-spend proof via a Poseidon commitment chain and never changes the nullifier hash.
+- This branch intentionally switches `transient_crypto::proofs::TranscriptHash` to the Poseidon transcript used by `midnight-circuits::verifier::VerifierGadget`. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
 
 **Measured impact (live e2e, `inclusion_status=inBlock`)**
 | Build | client proof | server proof | server / client | client prover key |
@@ -38,25 +38,24 @@ The current split-prove stack makes the node verify the wallet's proof and uses 
 
 The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registration. The spike that picked Poseidon over a 3-base Pedersen open for `C_sk` (1344 KB prover key vs 22 KB on this Compact lowering) lives in [spike-results.md](spike-results.md) in the parent repo.
 
-**Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](../deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](../deps/midnight-ledger/zswap/src/verify.rs))
+**Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](../deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](../deps/midnight-ledger/zswap/src/verify.rs), [split_wrapper.rs](../deps/midnight-ledger/zswap/src/split_wrapper.rs))
 - `Input<P, D>` and `Offer<P, D>` keep their original serialized wire shape so stock wallet/local-dev shielded transfers remain compatible with the patched node.
-- `SplitPublicInputs` includes `commitment_sk: Fr`.
-- `SplitProofBundle` carries `attestation_proof: Proof`. Older internal bundle shapes fail closed against the current verifier. Current wire layout:
+- `SplitProofBundle` remains available for building the wrapper witness, but production admission rejects raw direct split bundles.
+- `SplitWrapperProofBundle` is the node-admitted wrapper envelope. Current wire layout:
   ```
-  MAGIC ‖ u32 LE len ‖ spend_proof
-        ‖ u32 LE len ‖ client_derivation_proof
-        ‖ u32 LE len ‖ attestation_proof
-        ‖ public_key[32] ‖ coin_commitment[32]
-        ‖ coin_binding_tag[32] ‖ commitment_sk[32]
+  V4_MAGIC ‖ u32 LE len ‖ wrapper_proof
+           ‖ u32 LE len ‖ aggregate_accumulator
   ```
-- Split inputs verify `WALLET_ATTESTATION_VK` first (statement `(pk, commitment_sk)`), then `CLIENT_DERIVATION_VK` (statement `(pk, nullifier, coin_binding_tag, commitment_sk)` — cell 3 carries `commitment_sk`), then `SPEND_SPLIT_VK`, then byte-equates `pk` and `commitment_sk` across the three proofs.
-- Plain inputs still verify with the stock `SPEND_VK`; malformed split envelopes are rejected explicitly via `MalformedSplitProofBundle`.
+- Split-wrapper inputs verify `SPEND_SPLIT_WRAPPER_VK`, then check the aggregate accumulator against fixed bases for `WALLET_ATTESTATION_VK`, `CLIENT_DERIVATION_VK`, and `SPEND_SPLIT_VK`.
+- Plain inputs still verify with the stock `SPEND_VK`; raw direct split bundles and malformed wrapper envelopes are rejected via `MalformedSplitProofBundle`.
 
 **Circuit/artifact changes** ([deps/midnight-ledger/zswap/zswap-split.compact](../deps/midnight-ledger/zswap/zswap-split.compact), [deps/midnight-ledger/zswap/static](../deps/midnight-ledger/zswap/static))
 - `spendSplitUser` (server circuit) computes/discloses `coinCommitment = H(coin, pk)`, asserts it equals the Merkle path leaf, and discloses `coinBindingTag`. The wallet-attestation optimization does not change the server circuit.
 - Mirrored `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](../deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
 - [deps/midnight-ledger/zswap/static/client-derivation.verifier](../deps/midnight-ledger/zswap/static/client-derivation.verifier) matches the current `sk_prove` circuit, whose public transcript has 4 cells (cell 3 = `commitment_sk`). Source lives at [circuits/sk_proof.compact](../circuits/sk_proof.compact) in the parent repo; regenerate after any change.
 - [deps/midnight-ledger/zswap/static/wallet-attestation.verifier](../deps/midnight-ledger/zswap/static/wallet-attestation.verifier), compiled from [circuits/wallet_attestation.compact](../circuits/wallet_attestation.compact) in the parent repo. The node/indexer link this verifier to admit split inputs without depending on proof-server paths.
+- [deps/midnight-ledger/zswap/static/spend-split-wrapper.verifier](../deps/midnight-ledger/zswap/static/spend-split-wrapper.verifier) and [spend-split-wrapper.prover](../deps/midnight-ledger/zswap/static/spend-split-wrapper.prover), generated by `split_wrapper_keygen`. The wrapper currently requires K20 parameters; K19 failed with insufficient rows.
+- [deps/midnight-ledger/transient-crypto/static/bls_midnight_2p20.verifier](../deps/midnight-ledger/transient-crypto/static/bls_midnight_2p20.verifier) is the verifier-side K20 artifact generated with the wrapper keys. The node path still derives verifier params from cached K20 prover params for wrapper proof verification in this PoC branch.
 - Artifacts are regenerated with the local Compact CLI, for example:
   ```bash
   compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
@@ -64,23 +63,31 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
   compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
   ```
   Then copy `wallet_attest.verifier` to `deps/midnight-ledger/zswap/static/wallet-attestation.verifier` and `sk_prove.verifier` to `deps/midnight-ledger/zswap/static/client-derivation.verifier`.
+  Regenerate the recursive wrapper artifacts with:
+  ```bash
+  cargo run --release -p midnight-zswap \
+    --manifest-path deps/midnight-ledger/Cargo.toml \
+    --bin split_wrapper_keygen
+  ```
 
 **Construct/prove/proof-server flow**
-- `Input::new_split()` signature gains `commitment_sk: Fr` and `attestation_proof: Proof`; threads both into the emitted `SplitProofBundle`. The split proving context still returns `provedInputHex` with an encoded `ZswapInputProof::Split` envelope; the HTTP endpoint no longer hand-builds the envelope.
+- `Input::new_split()` still builds the internal split context used to prove `spend-split`, but `/v2/prove-split-spend` now wraps successful proving into `ZswapInputProof::SplitWrapped` before returning.
 - `Input<ProofPreimage>::delta()` and `binding_randomness()` are unchanged — the split witness trailer layout (`nullifier` appended after `rc`) is preserved, so preview submit-path Pedersen binding randomness still matches what the node recomputes.
-- `/v2/prove-split-spend` ([endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs)) accepts request fields `attestedCommitmentSk` and `attestationProof`; both are required for split spends. The endpoint fast-fail-verifies the attestation **before** any prover work, then verifies the client-derivation proof with the 4-cell transcript.
+- `/v2/prove-split-spend` ([endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs)) accepts request fields `attestedCommitmentSk` and `attestationProof`; both are required for split spends. The endpoint fast-fail-verifies the attestation **before** any prover work, verifies the client-derivation proof with the 4-cell transcript, proves `spend-split`, proves the recursive wrapper, and returns the wrapped proof envelope.
 - [preview_client.rs](../deps/midnight-ledger/proof-server/src/preview_client.rs) registers a wallet attestation once per preview run via `prove_wallet_attestation`, attaches `attestedCommitmentSk` and `attestationProof` to every `/v2/prove-split-spend` POST, and uses the current 10-witness layout (sk, pk, r, coin) in `build_client_derivation_preimage`. The `WalletAttestationResolver` branch wires the key location `split/wallet/attestation` to the bundled `wallet_attest` artifact. The staged-report role-boundary check also asserts `r` (the attestation blinding) does not cross the wire alongside `sk`.
-- The synthetic split-spend integration test deserializes `provedInputHex`, calls `Input<Proof>::well_formed(0)`, and asserts that a raw split proof without the client+attestation proofs, a tampered nullifier, a tampered `coinBindingTag`, and a malformed split envelope are all rejected (`MalformedSplitProofBundle`).
+- The synthetic split-spend integration test deserializes `provedInputHex`, confirms it carries `SplitWrapped`, calls `Input<Proof>::well_formed(0)`, and asserts corrupted wrapper proofs, corrupted accumulators, tampered normal admission fields, and malformed wrapper envelopes are rejected.
 
 **Build impact**
-- Rebuild the node, indexer, and proof-server images after verifier changes so they have the current envelope code and circuit blobs. The zswap input/offer outer wire tags remain compatible with local-dev's stock wallet SDK; only the opaque proof envelope changed.
+- Rebuild the node, indexer, and proof-server images after verifier changes so they have the current envelope code, Poseidon transcript setting, and circuit blobs. The zswap input/offer outer wire tags remain compatible with local-dev's stock wallet SDK; the opaque proof envelope and proof transcript changed.
 - Regenerate `zswap/static/wallet-attestation.verifier` whenever [circuits/wallet_attestation.compact](../circuits/wallet_attestation.compact) changes. Regenerate `zswap/static/client-derivation.verifier` whenever [circuits/sk_proof.compact](../circuits/sk_proof.compact) changes.
+- Regenerate `zswap/static/spend-split-wrapper.{prover,verifier}` whenever [zswap/src/split_wrapper.rs](../deps/midnight-ledger/zswap/src/split_wrapper.rs) or any inner verifier key changes.
 - Pure proof-server preview-client or test-side fixes (binding-randomness extraction, JSON field renames, role-boundary report wording) do not require rebuilding an already-running node or indexer; the node can already reject malformed sealed transactions correctly.
 
 ### Commits (newest first)
 
 | SHA | Subject |
 |---|---|
+| `a95910c4` | Add recursive split privacy wrapper |
 | `3b279990` | proof-server: add partial preview split-send support (transfer amount + shielded change output) |
 | `d385990e` | Fix preview split-send recipient nonce (avoid `CommitmentAlreadyPresent`) |
 | `c07e366d` | complete live split-send e2e with tx assembly and node inclusion check (`author_submitAndWatchExtrinsic`) |
@@ -151,6 +158,7 @@ Three split-prove commits sit on top of `6f0ef437 bump node 0.22.3 (#1072)`. Use
 
 | SHA | Subject |
 |---|---|
+| `b3e92109` | Align node lockfile with recursive wrapper ledger |
 | `ce17c6a4` | Use local Ledger 8 crate graph for node build |
 | `785e4ddd` | chore: simplify split-prove runtime image |
 | `232f14d6` | feat: build split-prove node image on node 0.22.3 |
@@ -174,7 +182,7 @@ The follow-up commit `785e4ddd` trimmed the runtime stage (−13 / +7) — cosme
 
 ## midnight-indexer
 
-Single commit on top of the v4.0.1 release. Diff (`git diff c90fb85..HEAD`): **3 files, +767 / −594** (the bulk is `Cargo.lock` from the patch override).
+Single commit on top of the 4.0.1 release. Diff (`git diff c90fb85..HEAD`): **3 files, +767 / −594** (the bulk is `Cargo.lock` from the patch override).
 
 ### Commit
 
