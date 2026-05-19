@@ -91,8 +91,8 @@ More run details, environment variables, and endpoint shapes live in [docs/poc-r
 ## Repo Layout
 
 - [circuits/](circuits/) contains the Compact circuits for wallet attestation and client derivation.
-- [deps/midnight-ledger](deps/midnight-ledger) contains the patched ledger, zswap verifier, and proof-server changes; it tracks [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2).
-- [deps/midnight-node](deps/midnight-node) and [deps/midnight-indexer](deps/midnight-indexer) are rebuilt against the patched ledger so split-send blocks are accepted and replayed; they track [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) and [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1).
+- [deps/midnight-ledger](deps/midnight-ledger) contains the patched ledger, zswap verifier, and proof-server changes; this branch uses local branch `recursive-privacy-wrapper-ledger`. The pre-wrapper comparison branch is `direct-split-bundle-ledger`.
+- [deps/midnight-node](deps/midnight-node) and [deps/midnight-indexer](deps/midnight-indexer) are rebuilt against the patched ledger so split-send blocks are accepted and replayed. This branch uses local branch `recursive-privacy-wrapper-node`; the pre-wrapper comparison branches are `direct-split-bundle-node` and `direct-split-bundle-indexer`.
 - [deps/midnight-local-dev](deps/midnight-local-dev) runs the local stack and includes the split-prove funding option.
 - [tools/](tools/) contains wallet SDK bridge helpers for seed derivation, Dust balancing, and raw-RPC submission.
 - [docs/](docs/) contains the detailed runbook, proof design notes, submodule change summary, and proof-cost spike notes.

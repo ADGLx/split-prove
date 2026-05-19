@@ -4,10 +4,10 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 | Component | Current rev | Baseline | Status |
 |---|---|---|---|
-| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger), branch `recursive-privacy-wrapper-ledger`) | `a95910c4` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
+| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger) ([local](../deps/midnight-ledger), branch `recursive-privacy-wrapper-ledger`; pre-wrapper branch `direct-split-bundle-ledger`) | `a95910c4` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
 | [deps/midnight-local-dev](../deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
-| [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) ([local](../deps/midnight-node), branch `recursive-privacy-wrapper-node`) | `b3e92109` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
-| [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1) ([local](../deps/midnight-indexer)) | `3235a61` | `c90fb85` (4.0.1 release tag) | Summarised below |
+| [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node) ([local](../deps/midnight-node), branch `recursive-privacy-wrapper-node`; pre-wrapper branch `direct-split-bundle-node`) | `b3e92109` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
+| [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer) ([local](../deps/midnight-indexer), branch `direct-split-bundle-indexer`) | `3235a61` | `c90fb85` (4.0.1 release tag) | Summarised below |
 
 ---
 

@@ -169,7 +169,7 @@ make rebuild-images
 ```
 
 The indexer source lives at `deps/midnight-indexer` (submodule pointing at
-`ADGLx/midnight-indexer`, branch `feature/split-prove-indexer-4.0.1`). Re-run
+`ADGLx/midnight-indexer`, branch `direct-split-bundle-indexer`). Re-run
 `make rebuild-images` after any change to that submodule or to
 `deps/midnight-ledger`. To run against the stock 4.0.1 image instead (which
 will crash on the split-send block), override:
