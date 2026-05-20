@@ -29,14 +29,14 @@ The current split-prove stack makes the node verify one wrapper proof plus an ag
 - The client derivation circuit proves the canonical Zswap nullifier (`midnight:zswap-cn[v1]`), so a stock spend and a split spend of the same coin still collide in the ledger nullifier set. A discarded internal Poseidon-nullifier experiment broke cross-path double-spend; the current design only moves **pk derivation** out of the per-spend proof via a Poseidon commitment chain and never changes the nullifier hash.
 - This branch intentionally switches `transient_crypto::proofs::TranscriptHash` to the Poseidon transcript used by `midnight-circuits::verifier::VerifierGadget`. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
 
-**Measured impact (live e2e, `inclusion_status=inBlock`)**
-| Build | client proof | server proof | server / client | client prover key |
+**Measured impact (latest live e2e, `inclusion_status=finalized`)**
+| Build | client proof | remote server proving | server / client | client prover key |
 |---|---:|---:|---:|---:|
-| Earlier internal prototype (no wallet attestation) | 1899 ms | 1948 ms | 1.03× | 5.20 MB |
-| Current design | 836 ms | 1720 ms | 2.06× | 2.82 MB |
-| delta | −56.0% | −11.7% | shift to server | −45.7% |
+| Earlier internal prototype (no wallet attestation, no recursive wrapper) | 1899 ms | 1948 ms | 1.03× | 5.20 MB |
+| Direct split bundle with wallet attestation, before wrapper proving dominated server cost | 836 ms | 1720 ms | 2.06× | 2.82 MB |
+| Current recursive privacy wrapper | 818 ms | 192,755 ms | 235.64× | 2.82 MB |
 
-The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registration. The spike that picked Poseidon over a 3-base Pedersen open for `C_sk` (1344 KB prover key vs 22 KB on this Compact lowering) lives in [spike-results.md](spike-results.md) in the parent repo.
+The latest run reported 193,573 ms split-prove proof-only total, 22,155 ms of transaction assembly/output proof/Dust balancing/submission work outside the proof-only comparison, and 216,810 ms full scan-to-finalized wall-clock. The wallet additionally pays a one-time `wallet_attest` proof at registration. The spike that picked Poseidon over a 3-base Pedersen open for `C_sk` (1344 KB prover key vs 22 KB on this Compact lowering) lives in [spike-results.md](spike-results.md) in the parent repo.
 
 **Zswap data model and verifier** ([deps/midnight-ledger/zswap/src/structure.rs](../deps/midnight-ledger/zswap/src/structure.rs), [verify.rs](../deps/midnight-ledger/zswap/src/verify.rs), [split_wrapper.rs](../deps/midnight-ledger/zswap/src/split_wrapper.rs))
 - `Input<P, D>` and `Offer<P, D>` keep their original serialized wire shape so stock wallet/local-dev shielded transfers remain compatible with the patched node.
@@ -110,11 +110,11 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 - `Preprocessed.committed_input_count` and `format_committed_instances()` override needed by the split flow.
 
 **Ledger verification wiring** ([deps/midnight-ledger/zswap/src/verify.rs](../deps/midnight-ledger/zswap/src/verify.rs), +71)
-- `lazy_static` refs for `SPEND_SPLIT_VK`, `CLIENT_DERIVATION_VK`, and `WALLET_ATTESTATION_VK` from the local `.verifier` blobs.
-- Split inputs are explicit via a typed proof envelope; the node verifies wallet-attestation, client-derivation, and spend-split proofs against matching public inputs.
+- `lazy_static` refs for `SPEND_SPLIT_WRAPPER_VK`, `SPEND_SPLIT_VK`, `CLIENT_DERIVATION_VK`, and `WALLET_ATTESTATION_VK` from the local `.verifier` blobs.
+- Split inputs are explicit via a typed wrapper envelope. The node verifies the recursive wrapper proof and aggregate accumulator; the wallet-attestation, client-derivation, and spend-split proofs are inner wrapper witnesses rather than separate ledger-visible proofs.
 
 **Proof server** ([deps/midnight-ledger/proof-server/](../deps/midnight-ledger/proof-server/))
-- New endpoint `POST /v2/prove-split-spend` in [endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs) (+403). Reconstructs `QualifiedCoinInfo`, loads the Merkle tree, rejects handoffs whose commitment doesn't reproduce the root, pre-verifies `attestationProof` and `clientDerivationProof`, calls `Input::new_split`, proves `midnight/zswap/spend-split`, returns `proofHex` + `provedInputHex`. Envelope construction is delegated to the zswap split proving context so any caller can produce a node-acceptable split input.
+- New endpoint `POST /v2/prove-split-spend` in [endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs) (+403). Reconstructs `QualifiedCoinInfo`, loads the Merkle tree, rejects handoffs whose commitment doesn't reproduce the root, pre-verifies `attestationProof` and `clientDerivationProof`, calls `Input::new_split`, proves `midnight/zswap/spend-split`, proves the recursive wrapper, and returns `proofHex` + `provedInputHex` carrying the wrapped proof envelope. Envelope construction is delegated to the zswap split proving context so any caller can produce a node-acceptable split input.
 - New file [preview_client.rs](../deps/midnight-ledger/proof-server/src/preview_client.rs): preview wallet scanner, handoff builder, full tx assembly (recipient output + binding randomness + StandardTransaction + Dust handoff to the JS wallet bridge), and `author_submitAndWatchExtrinsic` submission.
 - New driver binary [bin/preview_split_prove.rs](../deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs) (+102).
 - Integration tests [tests/integration_tests.rs](../deps/midnight-ledger/proof-server/tests/integration_tests.rs): synthetic e2e (always runs) + opt-in live preview e2e (`MIDNIGHT_RUN_PREVIEW_E2E=1`).

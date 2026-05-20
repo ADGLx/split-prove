@@ -63,7 +63,18 @@ The wallet-side per-spend client-derivation circuit is intentionally smaller tha
 
 The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The wrapper proof recursively verifies the three inner proofs and hides `pk`, `commitmentSk`, `coinBindingTag`, and `coinCommitment` from ledger/public admission.
 
-The recursive privacy-wrapper branch requires Poseidon-transcript proof generation because Midnight's recursive verifier gadget uses Poseidon transcript challenges. Older Blake2b-transcript direct split proof bytes are not accepted by the wrapper. The e2e report treats the per-spend client proof, server split proof, and wrapper proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+The recursive privacy-wrapper branch requires Poseidon-transcript proof generation because Midnight's recursive verifier gadget uses Poseidon transcript challenges. Older Blake2b-transcript direct split proof bytes are not accepted by the wrapper. The e2e report treats the per-spend client proof and remote server proving path as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+
+Latest live e2e proof-only comparison:
+
+| Stage | Time |
+|---|---:|
+| `clientDerivationProof` local proving | 818 ms |
+| Remote server proving path | 192,755 ms |
+| Split-prove proving total | 193,573 ms |
+| Server/client ratio | 235.64x |
+
+The full scan-to-finalized transaction wall-clock was 216,810 ms. Of that, 22,155 ms was transaction assembly, recipient output proof, Dust balancing, and submit work outside the proof-only comparison.
 
 ## Important Files
 
@@ -196,6 +207,7 @@ Expected output:
 
 ```text
 split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
+onchain-verify block_number=<number> extrinsic_index=<index> finalized_depth=<depth> finalized=true
 ```
 
 The underlying preview driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:

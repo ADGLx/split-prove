@@ -55,7 +55,7 @@ There are three inner proofs and one wrapper proof in the current flow:
 
 At submission time the node verifies only the wrapper proof plus its aggregate accumulator. The wrapper public inputs are the normal spend admission fields: Merkle root, nullifier, value commitment, contract address/none, and segment. The stable split-only linkage values `pk`, `C_sk`, `coinBindingTag`, and `coinCommitment` are not exposed as ledger/public envelope fields.
 
-The important optimization is that the wallet does not recompute the expensive `pk = H(sk)` relation on every spend. That relation moves to the one-time wallet attestation proof. Per spend, the wallet opens `C_sk` with a cheaper Poseidon/transient-hash commitment and proves the canonical nullifier relation, preserving normal double-spend semantics.
+The important optimization is that the wallet does not recompute the expensive `pk = H(sk)` relation on every spend. That relation moves to the one-time wallet attestation proof. Per spend, the wallet opens `C_sk` with a cheaper Poseidon/transient-hash commitment and proves the canonical nullifier relation, preserving normal double-spend semantics. The latest live e2e shows the resulting asymmetry clearly: the wallet's per-spend client proof took 818 ms, while the remote server proving path took 192,755 ms once the recursive privacy wrapper was included.
 
 The recursive privacy-wrapper branch intentionally changes proof transcript compatibility: inner proofs must be generated with the Poseidon transcript expected by Midnight's recursive `VerifierGadget`. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
 
@@ -106,6 +106,7 @@ The PoC is designed to protect the raw `sk` from the proof server and to stop ex
 ## More Documentation
 
 - [docs/split-proof-design.md](docs/split-proof-design.md) explains the proof boundary, common engineering questions, and approaches that were tried and discarded.
+- [docs/recursive-privacy-wrapper.md](docs/recursive-privacy-wrapper.md) explains the recursive wrapper, what it hides, what it does not hide, and the current cost/compatibility tradeoffs.
 - [docs/poc-runbook.md](docs/poc-runbook.md) is the operational runbook for the local E2E.
 - [docs/submodule-changes.md](docs/submodule-changes.md) summarizes the vendored dependency changes.
 - [docs/spike-results.md](docs/spike-results.md) records the proof-cost spike that led to the Poseidon `C_sk` commitment.

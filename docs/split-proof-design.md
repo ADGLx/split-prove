@@ -59,6 +59,8 @@ The tradeoff is proof-system compatibility. Midnight's recursive `VerifierGadget
 
 This is acceptable for the independent proof-of-concept branch, but it means the branch is not wire/proof compatible with stock Midnight proof artifacts. A production version would need a migration plan, a Blake2b-compatible recursive verifier gadget, or a fully Poseidon-based proof stack agreed across ledger/prover tooling.
 
+For the detailed recursive-wrapper boundary, latest e2e measurements, and tradeoff summary, see [recursive-privacy-wrapper.md](recursive-privacy-wrapper.md).
+
 ## Why The Wallet Proof Is Smaller
 
 The client does less repeated work because `C_sk` is opened with a cheap Poseidon/transient-hash relation instead of recomputing the expensive `pk = H(sk)` SHA-256 relation on every spend.

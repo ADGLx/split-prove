@@ -81,6 +81,12 @@ projection (~25–35% prover-key drop translates to ~50% proving-time drop here
 because the SHA-256 gadget dominates wall-clock more strongly than it does
 prover-key size). Transaction reached `inclusion_status: inBlock`.
 
+## Recursive wrapper update (latest live e2e)
+
+The Poseidon `C_sk` decision still holds for the wallet-local circuit: the latest recursive-wrapper e2e measured `clientDerivationProof` local proving at 818 ms. The new cost center is the server-side recursive wrapper path. The same run measured 192,755 ms of remote server proving, 193,573 ms split-prove proof-only total, and a 235.64x server/client proving ratio, with the transaction finalized on-chain.
+
+This does not change the commitment decision in this spike. It changes the operational tradeoff of the current branch: wallet proving stays small, but recursive privacy moves a large amount of proving work to the proof server.
+
 ## Files
 
 - `bench/bench_*.compact` — source circuits
