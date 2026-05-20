@@ -47,8 +47,9 @@ local chain
 
 The live e2e always spends the selected local-chain shielded output and creates
 a shielded output for `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`. The token
-movement is full split-send only: client derivation proof -> server split proof
--> split transaction assembly -> wallet SDK Dust balancing -> submission.
+movement is full split-send only: client derivation proof -> server recursive
+proving (`spend-split` plus privacy wrapper) -> split transaction assembly ->
+wallet SDK Dust balancing -> submission.
 
 ### Interpreting Proof Timings
 
@@ -63,14 +64,14 @@ The wallet-side per-spend client-derivation circuit is intentionally smaller tha
 
 The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The wrapper proof recursively verifies the three inner proofs and hides `pk`, `commitmentSk`, `coinBindingTag`, and `coinCommitment` from ledger/public admission.
 
-The recursive privacy-wrapper branch requires Poseidon-transcript proof generation because Midnight's recursive verifier gadget uses Poseidon transcript challenges. Older Blake2b-transcript direct split proof bytes are not accepted by the wrapper. The e2e report treats the per-spend client proof and remote server proving path as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+The recursive privacy-wrapper branch requires Poseidon-transcript proof generation because Midnight's recursive verifier gadget uses Poseidon transcript challenges. Older Blake2b-transcript direct split proof bytes are not accepted by the wrapper. The e2e report treats the per-spend client proof and remote server recursive proving path as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
 
 Latest live e2e proof-only comparison:
 
 | Stage | Time |
 |---|---:|
 | `clientDerivationProof` local proving | 818 ms |
-| Remote server proving path | 192,755 ms |
+| Remote server recursive proving path | 192,755 ms |
 | Split-prove proving total | 193,573 ms |
 | Server/client ratio | 235.64x |
 
@@ -206,9 +207,19 @@ make e2e
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
+timer CLIENT scan/select funded shielded coin: started
+timer CLIENT scan/select funded shielded coin: done in <elapsed>
+timer CLIENT derive handoff + clientDerivationProof: started
+timer CLIENT derive handoff + clientDerivationProof: done in <elapsed>
+timer SERVER recursive proving (spend-split + privacy wrapper): started
+timer SERVER recursive proving (spend-split + privacy wrapper): <elapsed> elapsed
+...
+timer SERVER recursive proving (spend-split + privacy wrapper): done in <elapsed>
+split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_recursive_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
 onchain-verify block_number=<number> extrinsic_index=<index> finalized_depth=<depth> finalized=true
 ```
+
+The live timer prints progress while long phases are running, especially the remote recursive proving call. It is enabled by default for the preview e2e. Disable it with `MIDNIGHT_PREVIEW_LIVE_TIMERS=0`, or change the update cadence with `MIDNIGHT_PREVIEW_LIVE_TIMER_INTERVAL_MS` (default `5000`).
 
 The underlying preview driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:
 
@@ -302,6 +313,7 @@ Response shape:
   "inputPreimageHex": "<serialized Input<ProofPreimage> hex>",
   "proofHex": "<serialized proof hex>",
   "provedInputHex": "<serialized Input<Proof> hex>",
+  "serverRecursiveProveMs": 192755,
   "proofError": null
 }
 ```

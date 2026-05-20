@@ -30,7 +30,7 @@ The current split-prove stack makes the node verify one wrapper proof plus an ag
 - This branch intentionally switches `transient_crypto::proofs::TranscriptHash` to the Poseidon transcript used by `midnight-circuits::verifier::VerifierGadget`. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
 
 **Measured impact (latest live e2e, `inclusion_status=finalized`)**
-| Build | client proof | remote server proving | server / client | client prover key |
+| Build | client proof | remote server recursive proving | server / client | client prover key |
 |---|---:|---:|---:|---:|
 | Earlier internal prototype (no wallet attestation, no recursive wrapper) | 1899 ms | 1948 ms | 1.03× | 5.20 MB |
 | Direct split bundle with wallet attestation, before wrapper proving dominated server cost | 836 ms | 1720 ms | 2.06× | 2.82 MB |

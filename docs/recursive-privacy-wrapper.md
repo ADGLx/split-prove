@@ -59,7 +59,7 @@ Latest live preview e2e:
 | Measurement | Result |
 |---|---:|
 | Client derivation proof, local | 818 ms |
-| Remote server proving path | 192,755 ms |
+| Remote server recursive proving path | 192,755 ms |
 | Split-prove proof-only total | 193,573 ms |
 | Server/client proving ratio | 235.64x |
 | Handoff non-proving overhead | 66 ms |
@@ -68,7 +68,7 @@ Latest live preview e2e:
 
 The transaction finalized on-chain at block hash `0x1dc62a7f92fecceabc5a41364b5498577cf1adf14329e3c24c9301db9ce0e76d`.
 
-This result is a different cost profile from the earlier direct split bundle. The wallet proof remains small because `pk = H(sk)` is paid once in wallet attestation and each spend opens `C_sk` with the cheaper Poseidon/transient-hash relation. The server now pays for both the spend-split work and the recursive privacy wrapper, so the proving asymmetry shifts heavily to the server.
+This result is a different cost profile from the earlier direct split bundle. The wallet proof remains small because `pk = H(sk)` is paid once in wallet attestation and each spend opens `C_sk` with the cheaper Poseidon/transient-hash relation. The benchmark now labels the server-side number as recursive proving because it includes both the `spend-split` proof and the privacy wrapper proof. That is the cost that shifts heavily to the server.
 
 ## Tradeoffs
 
@@ -76,7 +76,7 @@ This result is a different cost profile from the earlier direct split bundle. Th
 
 **Proof-server visibility remains.** The proof server still sees the handoff metadata needed to construct the spend proof. The wrapper is not an MPC or server-blind proving protocol.
 
-**Server proving cost increases sharply.** The latest live run shows about 193 seconds of remote proving versus 818 ms of local per-spend wallet proving. This is acceptable for the current proof-of-concept boundary, but it is the main operational cost to reduce before production use.
+**Server recursive proving cost increases sharply.** The latest live run shows about 193 seconds of remote proving versus 818 ms of local per-spend wallet proving. This is acceptable for the current proof-of-concept boundary, but it is the main operational cost to reduce before production use.
 
 **Compatibility changes.** Midnight's recursive `VerifierGadget` uses Poseidon transcript challenges. The wrapper therefore requires Poseidon-transcript inner proof material and regenerated verifier artifacts. Existing Blake2b-transcript direct split proof bytes are not wrapper-compatible.
 
