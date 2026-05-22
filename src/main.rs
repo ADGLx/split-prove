@@ -1,11 +1,15 @@
-//! # Split-Prove Prototype: Pedersen Commitment Handoff
+//! # Split-Prove Prototype: Solution A
 //!
 //! End-to-end demonstration of split proving where:
-//!   - **Client**: holds sk, computes nullifier/pk/coin-binding tag
-//!   - **Server** (heavy): builds ProofPreimage using pre-computed values, proves without sk
+//!   - **Client**: holds sk, computes nullifier/pk/coin-binding tag, and
+//!                 references its `WalletRegistration` (one-time per wallet).
+//!   - **Server** (heavy): builds ProofPreimage using pre-computed values,
+//!                 proves without sk.
 //!
-//! Uses the modified midnight-ledger circuits (new_split constructors) that accept
-//! pre-computed values instead of raw sk.
+//! Solution A change vs. v3: the wallet's `(pk, C_sk)` are no longer
+//! disclosed on chain. The only wallet-identifying public value the server
+//! emits is `registry_root`, the root of the registry contract's
+//! `HistoricMerkleTree` at the time of the spend.
 
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::{
@@ -15,7 +19,7 @@ use midnight_coin_structure::coin::{
 use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
-use midnight_transient_crypto::merkle_tree::MerkleTree;
+use midnight_transient_crypto::merkle_tree::{MerkleTree, MerkleTreeDigest};
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_transient_crypto::repr::FieldRepr;
 use midnight_zswap::Input;
@@ -24,39 +28,23 @@ use rand::Rng;
 use std::borrow::Cow;
 use std::time::Instant;
 
-// ─── Client Handoff ─────────────────────────────────────────────────────────
+// ─── Client Handoff (demo-only — see src/client.rs for the SDK type) ─────────
 
-/// Values the client computes from sk and sends to the server.
-/// The server never sees the raw sk.
 #[derive(Debug, Clone)]
 pub struct ClientHandoff {
-    /// ZK-friendly tag binding client and server proofs to the same coin.
     pub coin_binding_tag: Fr,
-
-    /// Nullifier = H(sk, coin_info)
     pub nullifier: Nullifier,
-
-    /// Public key derived from sk
     pub pk: CoinPublicKey,
-
-    /// Coin commitment = commit(pk, coin)
     pub commitment_hash: Commitment,
-
-    /// Coin info (not secret)
     pub coin_info: CoinInfo,
-
-    /// Qualified coin info with merkle index
     pub qualified_coin_info: QualifiedCoinInfo,
-
-    /// Whether this is a contract-owned coin
     pub is_contract: Option<midnight_coin_structure::contract::ContractAddress>,
-
-    /// v3: Poseidon commitment to sk, bound at wallet-attestation time.
-    pub commitment_sk: Fr,
+    /// Solution A: registry-tree root the membership path resolves to. Stub
+    /// `MerkleTreeDigest(0.into())` in the demo — production callers supply
+    /// the real root from their cached `RegistryWitness`.
+    pub registry_root: MerkleTreeDigest,
 }
 
-/// CLIENT SIDE: compute all sk-dependent values.
-/// This runs in the wallet — ~100µs, no heavy crypto.
 pub fn client_prepare(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
@@ -68,26 +56,17 @@ pub fn client_prepare(
         SenderEvidence::User(Cow::Borrowed(sk))
     };
 
-    // Derive pk
     let pk = sk.public_key();
-
-    // Compute the canonical Zswap nullifier so split and non-split spends
-    // collide in the same ledger nullifier set.
     let coin_info = CoinInfo::from(coin);
     let nullifier = split_nullifier(&coin_info, sk);
-
-    // Compute coin commitment (still SHA-256; stock zswap funding compatibility).
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
-
     let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
-    // Demo placeholder: in real wallet use, `commitment_sk` comes from the
-    // one-time WalletAttestation (`attestation::register_wallet`). The demo
-    // skips the attestation prover-call and stubs this to zero — the demo
-    // also passes empty proofs into `Input::new_split`, so the result is not
-    // node-verifiable. See `src/client.rs::client_prepare_with_attestation`
-    // for the production path.
-    let commitment_sk = Fr::from(0u64);
+    // Solution A demo placeholder: the production wallet supplies the
+    // registry root from its `RegistryWitness`, fetched once per session via
+    // `refresh_registry_path`. The demo stubs it to zero — the resulting
+    // bundle will fail admission until a real witness is wired in.
+    let registry_root = MerkleTreeDigest(Fr::from(0u64));
 
     ClientHandoff {
         coin_binding_tag,
@@ -97,7 +76,7 @@ pub fn client_prepare(
         coin_info,
         qualified_coin_info: coin.clone(),
         is_contract,
-        commitment_sk,
+        registry_root,
     }
 }
 
@@ -107,8 +86,6 @@ fn split_nullifier(coin: &CoinInfo, sk: &CoinSecretKey) -> Nullifier {
 
 // ─── Server Side ────────────────────────────────────────────────────────────
 
-/// SERVER SIDE: build the ProofPreimage for zswap/spend using the client handoff.
-/// The server NEVER sees the raw secret key.
 pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
     handoff: &ClientHandoff,
     tree: &MerkleTree<(), D>,
@@ -121,9 +98,8 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
         handoff.commitment_hash,
         handoff.pk,
         handoff.coin_binding_tag,
-        handoff.commitment_sk, // v3
-        Proof(Vec::new()),     // placeholder client-derivation proof for the demo
-        Proof(Vec::new()),     // v3: placeholder attestation proof for the demo
+        handoff.registry_root,
+        Proof(Vec::new()), // placeholder client-derivation proof for the demo
         handoff.is_contract,
         tree,
     )
@@ -134,9 +110,8 @@ pub fn server_build_spend_preimage<D: midnight_storage::db::DB>(
 // ─── Demo ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== Split-Prove Prototype v2: End-to-End ===\n");
+    println!("=== Split-Prove Prototype (Solution A): End-to-End ===\n");
 
-    // ── Setup ──
     let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
     let coin = QualifiedCoinInfo {
         value: 1000u64.into(),
@@ -145,7 +120,6 @@ fn main() {
         mt_index: 0,
     };
 
-    // Build a merkle tree with the coin's commitment
     let sender_evidence = SenderEvidence::User(Cow::Borrowed(&sk));
     let coin_info = CoinInfo::from(&coin);
     let commitment = coin_info.commitment(&Recipient::from(sender_evidence));
@@ -157,7 +131,6 @@ fn main() {
     println!("  coin value:      {}", coin.value);
     println!("  merkle root:     {:?}", tree.root().unwrap());
 
-    // ── CLIENT: compute handoff (~100µs) ──
     println!("\n--- CLIENT (wallet) ---");
     let start = Instant::now();
     let handoff = client_prepare(&sk, &coin, None);
@@ -165,16 +138,14 @@ fn main() {
     println!("  Time:            {:?}", client_time);
     println!("  nullifier:       {}", hex::encode(handoff.nullifier.0 .0));
     println!("  coin_binding:    {:?}", handoff.coin_binding_tag);
-    println!("  pk:              {:?}", handoff.pk);
+    println!("  registry_root:   {:?} (demo stub: zero)", handoff.registry_root);
 
-    // ── Verify sk is NOT in the handoff ──
     let mut sk_fields = Vec::new();
     sk.field_repr(&mut sk_fields);
     let sk_fr = sk_fields[0];
     assert_ne!(handoff.coin_binding_tag, sk_fr, "tag must NOT equal raw sk");
     println!("  sk NOT exposed:  ✓ (tag ≠ raw sk)");
 
-    // ── SERVER: build ProofPreimage WITHOUT sk ──
     println!("\n--- SERVER (prover) ---");
     let start = Instant::now();
     let spend_input =
@@ -198,7 +169,6 @@ fn main() {
     );
     println!("  inputs[0..2] = pk fields (not sk): ✓");
 
-    // ── Compare with original (sk-exposing) flow ──
     println!("\n--- COMPARISON: original flow (exposes sk) ---");
     let original_input = Input::<ProofPreimage, InMemoryDB>::new_from_secret_key(
         &mut OsRng,
@@ -208,8 +178,6 @@ fn main() {
         &tree,
     )
     .expect("original spend");
-    // SenderEvidence::User serializes as [discriminant=1, sk_field_0, sk_field_1, ...]
-    // So inputs[0] = 1 (discriminant), inputs[1] = first sk field
     assert_eq!(
         original_input.proof.inputs[0],
         Fr::from(1u64),
@@ -222,25 +190,29 @@ fn main() {
     println!("  original inputs[1] = RAW SK: ✗ (exposed!)");
     println!("  split    inputs[0] = PUBLIC KEY FIELD: ✓ (not sk)");
 
-    // ── Summary ──
     println!("\n=== Results ===");
     println!(
-        "  Client computation: {:?} (nullifier + pk + coin-binding tag)",
+        "  Client computation: {:?} (nullifier + coin-binding tag + reg_leaf preimage)",
         client_time
     );
     println!(
         "  Server build:       {:?} (ProofPreimage without sk)",
         server_build_time
     );
-    println!("  Server would then:  prove() → 2-10s (PLONK, no sk needed)");
-    println!("\n  SECURITY:");
-    println!("    Original: server sees sk in inputs[0] ✗");
-    println!("    Split:    server sees pk/tag/nullifier, never raw sk ✓");
+    println!("  Server would then:  prove() → ~960 ms (Solution A's +20-Poseidon membership)");
 
-    println!("\n=== Production TODO ===");
-    println!("  1. New circuit IR (.bzkir) for 'midnight/zswap/spend-split'");
-    println!("     that verifies pk/nullifier/tag via clientDerivationProof");
-    println!("  2. Add /v2/prove endpoint to api-gateway accepting ClientHandoff");
-    println!("  3. Client SDK: client_prepare() → POST /v2/prove");
-    println!("  4. Key generation for the new split circuits");
+    println!("\n=== Remaining production work (out of scope for this demo binary) ===");
+    println!("  - The proof-server installs a *permissive* registry-root checker");
+    println!("    at boot (see `install_registry_root_checker_for_demo`). A");
+    println!("    production deployment must replace it with one that resolves");
+    println!("    the deployed registry contract's `HistoricMerkleTree<20>` from");
+    println!("    the live `LedgerState` and only admits roots in its history.");
+    println!("  - The node's admission path needs the same hook wired up at");
+    println!("    startup (`deps/midnight-node`). For the live preview e2e in");
+    println!("    `cargo make e2e` the proof-server's permissive checker is");
+    println!("    sufficient.");
+    println!("  - `tools/deploy_registry.sh --deploy-registry` flag on");
+    println!("    `preview_balance_submit_split_tx.mjs` still needs to be");
+    println!("    implemented to submit the registry-contract deploy + register");
+    println!("    contract calls against a live node.");
 }

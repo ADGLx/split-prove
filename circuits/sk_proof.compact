@@ -1,41 +1,60 @@
-// Client-side circuit, split-prove v3.
+// Client-side per-spend circuit, split-prove Solution A.
 //
-// Replaces the v2 sk_proof, which paid SHA-256(sk) on every spend, with an
-// open of a one-time-per-wallet Poseidon commitment `C_sk`. The canonical
-// `pk = persistentHash("midnight:zswap-pk[v1]", sk)` is now proven by the
-// separate `wallet_attestation.compact` circuit at wallet-setup time and
-// re-verified per-spend in the Rust admission code by cross-checking the
-// public outputs of both proofs. See
-// /Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md
-// for the soundness argument.
+// Replaces the v3 design (which disclosed `pk` and `C_sk` on every split spend,
+// trivially linking all spends from a single wallet) with a Merkle-membership
+// proof against the wallet registry contract. The wallet stays in the
+// anonymity set of all wallets that have ever been registered against any
+// historic root of the registry tree.
 //
-// What this circuit proves per spend:
-//   1. The wallet knows `(sk, r)` that opens the registered `C_sk` —
-//      `commitmentSk = transientHash("midnight:sk-commit[v1]", sk, r)`.
-//   2. The canonical nullifier was derived from *that* same `sk` —
-//      `nullifier = persistentHash("midnight:zswap-cn[v1]", coin, true, sk)`.
-//   3. The same `pk` carried in the handoff is the coin owner key used by
-//      the server's `coinBindingTag` and `coinCommitment` —
-//      `coinBindingTag = transientHash("midnight:zswap-split-coin[v1]", coin, pk)`.
+// Per-spend witnesses (all private):
+//   * sk           — 32-byte coin secret key
+//   * r            — Poseidon blinding for `C_sk` (registered once at setup)
+//   * salt         — per-registration blinding for `reg_leaf`
+//   * pk           — canonical Zswap public key (constrained against `sk` via
+//                    the standard SHA-256 gadget; never disclosed)
+//   * coin         — qualified coin info for the spend
+//   * merkle_path  — Merkle inclusion proof of `reg_leaf` against some
+//                    historical root of the registry tree
 //
-// `pk` is disclosed as a witness (not recomputed from sk); the admission
-// verifier asserts it equals the attestation's `pk` public output, and the
-// attestation already binds that `pk` to the unique `sk` opening `C_sk`.
+// Public outputs:
+//   * nullifier      — canonical Zswap nullifier
+//                      `persistentHash("midnight:zswap-cn[v1]", coin, true, sk)`
+//   * coinBindingTag — `transientHash("midnight:zswap-split-coin[v1]", coin, pk)`
+//                      (binds this client proof and the server's spend-split
+//                       proof to the same `(coin, pk)`)
+//   * registryRoot   — root of the registry tree the membership path resolves
+//                      to. The admission verifier checks that this root is in
+//                      the registry contract's historical root set.
 //
-// Soundness summary:
-//   * Poseidon binding on `(sk, r)` ⇒ at most one `sk` opens the registered
-//     `C_sk` (computationally, under transientHash collision resistance).
-//   * The same `sk` bit witnesses are consumed by the SHA-256 nullifier
-//     gadget AND by the Poseidon C_sk gadget — Compact's natural compilation
-//     reuses the constrain_bits-decomposed limbs of `sk.bytes` across both.
-//   * The canonical nullifier formula is byte-identical to stock Zswap, so
-//     a stock spend and a split spend of the same coin still collide in the
-//     ledger nullifier set.
+// Soundness chain (the four checks that together replace the v3
+// attestation/per-spend cross-checks):
+//
+//   1. `C_sk = transientHash(sep_sk, sk, r)` (Poseidon binding → unique `sk`
+//      per `(C_sk, r)`).
+//   2. `reg_leaf = transientHash(sep_reg, C_sk, salt)` (Poseidon binding).
+//   3. `merkleTreePathRootNoLeafHash(path) == upgradeFromTransient(reg_leaf)`'s
+//      historical root → this `reg_leaf` was registered at some point.
+//   4. `nullifier = persistentHash(sep_cn, coin, true, sk)` and
+//      `coinBindingTag = transientHash(sep_split_coin, coin, pk)` use the same
+//      `sk` and `pk` bit witnesses that bound `C_sk` and `pk = H(sk)`.
+//
+// The canonical `pk = persistentHash("midnight:zswap-pk[v1]", sk)` is computed
+// in-circuit (its SHA-256 limbs bind the same `sk` byte witnesses Compact uses
+// for the Poseidon `C_sk`), then asserted equal to the witnessed `pk` — and
+// never disclosed. Wallet-level unlinkability across split spends comes from
+// the membership proof: the only wallet-identifying public output is
+// `registryRoot`, which is shared across every contemporaneous spend against
+// the same registry state.
 
 import CompactStandardLibrary;
 
 struct ZswapCoinSecretKey {
   bytes: Bytes<32>;
+}
+
+struct PublicKeyPreimage {
+  sep: Bytes<21>,
+  secretKey: ZswapCoinSecretKey,
 }
 
 struct SplitCoinBindingPreimage {
@@ -57,28 +76,42 @@ struct SkCommitPreimage {
   blinding: Field,
 }
 
-// Public outputs: pk, nullifier, coinBindingTag, commitmentSk.
-ledger publicKey: ZswapCoinPublicKey;
+struct RegLeafPreimage {
+  sep: Field,
+  commitmentSk: Field,
+  salt: Field,
+}
+
+// Public outputs: nullifier, coinBindingTag, registryRoot.
 ledger nullifier: Bytes<32>;
 ledger coinBindingTag: Field;
-ledger commitmentSk: Field;
+// Registry-tree root the membership path resolves to. `MerkleTreeDigest`
+// matches what `merkleTreePathRootNoLeafHash` returns — a struct wrapping a
+// `Field`. The admission verifier reads the digest's field as a `Fr`.
+ledger registryRoot: MerkleTreeDigest;
 
 export circuit sk_prove(
   sk: ZswapCoinSecretKey,
   pk: ZswapCoinPublicKey,
   r: Field,
-  coin: ShieldedCoinInfo
+  salt: Field,
+  coin: ShieldedCoinInfo,
+  merkle_path: MerkleTreePath<20, Bytes<32>>
 ): [] {
-  // 1. Disclose pk from witness. NOT re-derived from sk in-circuit —
-  //    the attestation circuit (run once at wallet setup) proves
-  //    `pk = persistentHash(sep, sk)` and the admission verifier
-  //    cross-checks `attested_pk == this disclosed pk`.
-  publicKey = disclose(pk);
+  // 1. Canonical Zswap pk: bind the witnessed `pk` to `sk` via SHA-256. The
+  //    pk is NEVER disclosed; this assertion just constrains the same `sk` bit
+  //    witnesses that the Poseidon `C_sk` below will consume.
+  const pk_canonical = ZswapCoinPublicKey {
+    bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
+      sep: "midnight:zswap-pk[v1]",
+      secretKey: sk,
+    })
+  };
+  assert(pk_canonical == pk, "witnessed pk must equal H(sk)");
 
   // 2. Canonical Zswap nullifier — byte-identical to stock so split and
   //    non-split spends of the same coin collide in the same on-ledger
-  //    nullifier set. Uses the bit-decomposed `sk` witnesses that Compact
-  //    also feeds to the C_sk hash below.
+  //    nullifier set.
   nullifier = disclose(persistentHash<CoinPreimage>(
     CoinPreimage {
       sep: "midnight:zswap-cn[v1]",
@@ -87,8 +120,10 @@ export circuit sk_prove(
       data: sk.bytes,
     }));
 
-  // 3. Coin-binding tag — unchanged from v2. Links this client proof and
-  //    the server's spend-split proof to the same `(coin, pk)`.
+  // 3. Coin-binding tag — binds this client proof and the server's spend-split
+  //    proof to the same `(coin, pk)`. The server's proof discloses the same
+  //    value computed from its witnessed `pk`; admission cross-checks the two
+  //    discloses for byte-equality.
   coinBindingTag = disclose(transientHash<SplitCoinBindingPreimage>(
     SplitCoinBindingPreimage {
       sep: "midnight:zswap-split-coin[v1]" as Field,
@@ -96,13 +131,23 @@ export circuit sk_prove(
       publicKey: pk,
     }));
 
-  // 4. Open the per-wallet Poseidon commitment to `sk`. Recomputed in-circuit
-  //    from witness `(sk, r)`; the admission verifier cross-checks this
-  //    against the attestation's `commitmentSk` public output. Cheaper than
-  //    a Pedersen open by ~60× on this Compact lowering (see docs/spike-results.md).
-  commitmentSk = disclose(transientHash<SkCommitPreimage>(SkCommitPreimage {
+  // 4. Open the wallet's Poseidon `C_sk` and blind it once more with `salt`
+  //    to recompute the registration leaf.
+  const commitmentSk = transientHash<SkCommitPreimage>(SkCommitPreimage {
     sep: "midnight:sk-commit[v1]" as Field,
     secretKey: sk,
     blinding: r,
-  }));
+  });
+  const regLeaf = transientHash<RegLeafPreimage>(RegLeafPreimage {
+    sep: "midnight:wallet-reg[v1]" as Field,
+    commitmentSk: commitmentSk,
+    salt: salt,
+  });
+
+  // 5. Tie the computed `regLeaf` to the supplied Merkle path's leaf, then
+  //    compute and disclose the resulting root. The admission verifier checks
+  //    this root against the registry contract's HistoricMerkleTree roots set.
+  assert(upgradeFromTransient(regLeaf) == merkle_path.leaf,
+    "merkle path must be for the computed reg_leaf");
+  registryRoot = disclose(merkleTreePathRootNoLeafHash<20>(merkle_path));
 }

@@ -1,0 +1,27 @@
+// Wallet registry contract for split-prove (Solution A).
+//
+// Maintains a HistoricMerkleTree of wallet registration leaves. Each leaf is
+// the persistent-hash upgrade of the transient
+//
+//   reg_leaf = transientHash("midnight:wallet-reg[v1]", C_sk, salt)
+//
+// produced by the wallet attestation circuit. The wallet computes
+// `upgradeFromTransient(reg_leaf)` off-circuit and submits the resulting
+// 32-byte value to `register(leaf)`. The contract calls `insertHash` (not
+// `insert`) so the bytes go in directly — that matches the per-spend
+// circuit's `merkleTreePathRootNoLeafHash<20>(merkle_path)` verification,
+// which expects the path's leaf to already be the in-tree representation
+// (no extra leaf-hashing). Same pattern as `dust.compact:146`
+// (`commitment_merkle_tree.insertHash(upgradeFromTransient(new_com))`).
+//
+// Tree height 20 → ~1M wallets per deployment. The standard
+// `HistoricMerkleTree` gadget automatically maintains the root history
+// the admission verifier reads via `install_registry_root_checker`.
+
+import CompactStandardLibrary;
+
+ledger tree: HistoricMerkleTree<20, Bytes<32>>;
+
+export circuit register(leaf: Bytes<32>): [] {
+  tree.insertHash(disclose(leaf));
+}

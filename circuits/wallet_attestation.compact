@@ -1,18 +1,30 @@
-// One-time wallet attestation for split-prove v3.
+// One-time wallet attestation for split-prove (Solution A).
 //
-// Run once per wallet at setup. Binds the canonical Zswap public key
-// `pk = persistentHash("midnight:zswap-pk[v1]", sk)` to a Poseidon commitment
-// `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)` over the *same*
-// 32-byte secret key bit witnesses.
+// Run once per wallet at setup. Witnesses `(sk, r, salt)` and discloses the
+// single field `reg_leaf` that the wallet will then submit to the registry
+// contract:
 //
-// The per-spend circuit (sk_prove_v3) later opens C_sk to recover the unique
-// `sk` and computes the canonical nullifier from it. SHA-256 over sk is paid
-// here, *once*, instead of on every spend. See
-// /Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md
-// for the full soundness argument.
+//   C_sk     = transientHash("midnight:sk-commit[v1]", sk, r)
+//   reg_leaf = transientHash("midnight:wallet-reg[v1]", C_sk, salt)
 //
-// Both `pk` and `C_sk` are disclosed as public outputs; the node admission
-// verifier cross-checks them against the bundled split-spend proof.
+// The canonical Zswap public key `pk = persistentHash("midnight:zswap-pk[v1]",
+// sk)` is still computed in-circuit (its SHA-256 limbs bind the same `sk` byte
+// witnesses as the Poseidon `C_sk`), but `pk` is NOT disclosed — it is held as
+// an in-circuit assertion only. Solution A's chain of soundness:
+//
+//   1. The per-spend proof opens reg_leaf → C_sk → sk under Poseidon binding.
+//   2. The canonical nullifier is `persistentHash(coin, sk)` (stock Zswap).
+//   3. Spending a coin requires it to have been minted to `pk = H(sk)`,
+//      enforced by stock Zswap's `coinCommitment = H(coin, pk)` and verified
+//      in-circuit by the server's `assert(coinCom == path.leaf, …)`.
+//   4. Therefore registering reg_leaf for an `sk` you don't own is harmless;
+//      you can't spend under it without first receiving a coin minted to its
+//      `pk`, and that requires knowing `sk`.
+//
+// Disclosure compared to the previous v3 attestation circuit:
+//   - DROPPED: `publicKey` ledger cell — `pk` is now private to the wallet.
+//   - DROPPED: `commitmentSk` ledger cell — `C_sk` is private to the wallet.
+//   - ADDED:   `regLeaf` ledger cell — the (blinded) registration leaf.
 
 import CompactStandardLibrary;
 
@@ -31,31 +43,45 @@ struct SkCommitPreimage {
   blinding: Field,
 }
 
-// Public outputs.
-ledger publicKey: ZswapCoinPublicKey;
-ledger commitmentSk: Field;
+struct RegLeafPreimage {
+  sep: Field,
+  commitmentSk: Field,
+  salt: Field,
+}
+
+// Single public output: the registration leaf.
+ledger regLeaf: Field;
 
 export circuit wallet_attest(
   sk: ZswapCoinSecretKey,
-  r: Field
+  r: Field,
+  salt: Field
 ): [] {
-  // Canonical Zswap public key — byte-identical to stock and to today's
-  // sk_prove. Compact will reuse the bit witnesses for `sk` in the SHA-256
-  // gadget below for the Poseidon hash too, so both bind the same byte string.
-  publicKey = disclose(ZswapCoinPublicKey {
+  // 1. Bind `sk` bit witnesses through the canonical Zswap pk gadget (SHA-256).
+  //    pk is kept private to the wallet; it never leaves the circuit. This
+  //    statement still constrains the same bit decomposition Compact reuses
+  //    for the Poseidon `C_sk` below, so the two gadgets agree on `sk`.
+  const _pk_unused = ZswapCoinPublicKey {
     bytes: persistentHash<PublicKeyPreimage>(PublicKeyPreimage {
       sep: "midnight:zswap-pk[v1]",
       secretKey: sk,
     })
-  });
+  };
 
-  // Poseidon commitment to `sk` (split internally by Compact into limbs that
-  // each fit in Fr without modular reduction). Range-checked via constrain_bits
-  // on each limb of `sk.bytes`. Binding under Poseidon collision resistance.
-  // Hiding under Poseidon preimage resistance and a fresh random `r`.
-  commitmentSk = disclose(transientHash<SkCommitPreimage>(SkCommitPreimage {
+  // 2. Poseidon commitment to `sk`. Binding under Poseidon collision
+  //    resistance; hiding under Poseidon preimage resistance and `r`.
+  const commitmentSk = transientHash<SkCommitPreimage>(SkCommitPreimage {
     sep: "midnight:sk-commit[v1]" as Field,
     secretKey: sk,
     blinding: r,
+  });
+
+  // 3. Blind `C_sk` once more with a per-registration `salt`. The leaf is the
+  //    only value disclosed; without `salt` an observer cannot link two
+  //    registrations of the same `C_sk` (e.g. a wallet rotating its leaf).
+  regLeaf = disclose(transientHash<RegLeafPreimage>(RegLeafPreimage {
+    sep: "midnight:wallet-reg[v1]" as Field,
+    commitmentSk: commitmentSk,
+    salt: salt,
   }));
 }

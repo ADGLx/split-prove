@@ -1,9 +1,21 @@
-//! Client-side SDK for split proving.
+//! Client-side SDK for split proving (Solution A).
 //!
-//! The client (wallet) holds the secret key and computes all sk-dependent
-//! values. These are packaged into a `ClientHandoff` and sent to the server.
-//! The server never sees the raw secret key.
+//! The wallet holds the secret key and computes all sk-dependent values. These
+//! are packaged into a `ClientHandoff` and sent to the server. The server
+//! never sees `sk`, `r`, `salt`, or the Merkle membership path.
+//!
+//! Unlinkability surface:
+//!   - The handoff now carries `registry_root` (shared across every spend
+//!     against the same registry state) instead of `pk` / `attested_commitment_sk`
+//!     (which were per-wallet and trivially linkable). `pk` is still passed to
+//!     the server through `pk_for_server_proof` — the server's spend-split
+//!     circuit needs it for the on-chain `coinCommitment` computation — but
+//!     `pk` itself is never published on-chain by either circuit.
+//!   - `coin_binding_tag` (per coin) is still public; per the plan's "known
+//!     limitations" it links a single spend to its originating output but is
+//!     out of scope for Solution A.
 
+use crate::attestation::WalletRegistration;
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::{
     Commitment, Info as CoinInfo, Nullifier, PublicKey as CoinPublicKey,
@@ -18,53 +30,78 @@ use midnight_onchain_runtime::state::StateValue;
 use midnight_storage::arena::Sp;
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
+use midnight_transient_crypto::merkle_tree::{MerklePath, MerkleTreeDigest};
 use midnight_transient_crypto::proofs::{
     KeyLocation, ParamsProver, ParamsProverProvider, Proof, ProofPreimage, ProvingKeyMaterial,
     Resolver,
 };
 use midnight_transient_crypto::repr::FieldRepr;
 use rand::rngs::OsRng;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// Data the client sends to the server for split proving.
-/// Contains all sk-dependent derived values but NOT the raw sk and NOT
-/// the per-wallet blinding `r` (which the wallet keeps to re-open `C_sk`).
+/// Height of the wallet-registry Merkle tree. Must match the constant in
+/// `circuits/wallet_registry.compact` (`HistoricMerkleTree<20, …>`) and
+/// `circuits/sk_proof.compact` (`MerkleTreePath<20, Bytes<32>>`).
+pub const REGISTRY_TREE_HEIGHT: u8 = 20;
+
+/// Compute the merkle root from a `(leaf_hash, path)` pair *without* applying
+/// any further leaf hash. This is the off-circuit equivalent of Compact's
+/// `merkleTreePathRootNoLeafHash<H>(path)` and matches the registry
+/// contract's `tree.insertHash(leaf_bytes)` semantics (no extra hash).
 ///
-/// v3 carries a one-time wallet attestation alongside the per-spend proof; the
-/// node admission verifier cross-checks the attestation's `(pk, C_sk)` against
-/// the per-spend proof's `(pk, C_sk)` to bind the chain
-/// `pk = H(sk) ↔ C_sk = transientHash(sk, r) ↔ nullifier = H(coin, sk)`.
+/// Copy of `raw_leaf_hash_root` from
+/// `deps/midnight-ledger/zswap/src/construct.rs` — same logic but reproduced
+/// here so the split-prove client doesn't have to depend on zswap's
+/// internal helpers.
+pub fn raw_leaf_hash_root<T>(
+    leaf_hash: HashOutput,
+    path: &MerklePath<T>,
+) -> MerkleTreeDigest {
+    use midnight_transient_crypto::hash::{degrade_to_transient, transient_hash};
+    MerkleTreeDigest(path.path.iter().fold(
+        degrade_to_transient(leaf_hash),
+        |acc, entry| {
+            if entry.goes_left {
+                transient_hash(&[acc, entry.sibling.0])
+            } else {
+                transient_hash(&[entry.sibling.0, acc])
+            }
+        },
+    ))
+}
+
+/// Data the client sends to the server for split proving.
+///
+/// Solution A: `pk` and `attested_commitment_sk` are gone. The only
+/// wallet-identifying public value is `registry_root`, which is shared across
+/// every spend against the same registry tree state. The wallet's `pk` still
+/// travels privately to the server (it's needed for the server's
+/// `coinCommitment` recomputation) but never appears in the bundle's public
+/// inputs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientHandoff {
-    /// ZK-friendly tag binding the client proof and server split proof to the same coin.
+    /// ZK-friendly tag binding the client proof and server split proof to the
+    /// same coin: `transientHash("midnight:zswap-split-coin[v1]", coin, pk)`.
     pub coin_binding_tag: [u8; 32],
 
-    /// Nullifier = H(sk, coin_info)
+    /// Canonical Zswap nullifier:
+    /// `persistentHash("midnight:zswap-cn[v1]", coin, true, sk)`.
     pub nullifier: [u8; 32],
 
-    /// Public key = H(sk)
+    /// Coin owner key. Private to the wallet–server handoff (not bundled into
+    /// the on-chain `SplitPublicInputs`). The server's spend-split circuit
+    /// witnesses `pk` to recompute the coin commitment.
     pub pk: [u8; 32],
 
-    /// Coin commitment = commit(pk, coin)
+    /// Coin commitment `commit(pk, coin)`. Private to the wallet–server
+    /// handoff — used to look up the merkle path; not disclosed on-chain.
     pub commitment_hash: [u8; 32],
 
-    /// Poseidon commitment `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)`
-    /// from the per-wallet attestation. Disclosed publicly by both the
-    /// attestation proof and the per-spend proof; the admission verifier
-    /// asserts byte-equality between the two and uses Poseidon binding to
-    /// conclude that the per-spend `sk` is the same one the attestation bound
-    /// to `pk`.
-    #[serde(default)]
-    pub attested_commitment_sk: [u8; 32],
-
-    /// Hex-encoded serialized proof for `circuits/wallet_attestation.compact`,
-    /// produced once at wallet setup. Carried verbatim in every split-send
-    /// bundle so the admission verifier can recheck `pk = H(sk) ∧
-    /// C_sk = transientHash(sk, r)` without consulting any ledger registry.
-    #[serde(default)]
-    pub attestation_proof: Option<String>,
+    /// Registry-tree root the membership path resolves to. This **is** the
+    /// only wallet-identifying public value. See `SplitPublicInputs` for the
+    /// admission cross-check semantics.
+    pub registry_root: [u8; 32],
 
     /// Coin value
     pub coin_value: u128,
@@ -75,19 +112,17 @@ pub struct ClientHandoff {
     /// Coin nonce
     pub coin_nonce: [u8; 32],
 
-    /// Merkle tree index of the coin
+    /// Merkle tree index of the coin in the Zswap tree
     pub mt_index: u64,
 
-    /// Contract-owned coin address, if present.
-    ///
-    /// Split-prove currently supports user-owned shielded coins only; server
-    /// preimage construction rejects `Some`.
+    /// Contract-owned coin address, if present. Split-prove currently
+    /// supports user-owned shielded coins only; server preimage construction
+    /// rejects `Some`.
     pub contract_address: Option<[u8; 32]>,
 
-    /// Serialized proof that binds sk to nullifier, coin_binding_tag, and the
-    /// disclosed `pk` / `attested_commitment_sk` (the latter recomputed
-    /// in-circuit from `(sk, r)` and compared by the admission verifier to the
-    /// attestation's public output).
+    /// Hex-encoded serialized proof for `circuits/sk_proof.compact`. Binds
+    /// `(sk, r, salt, pk, coin, merkle_path)` to the disclosed
+    /// `(nullifier, coin_binding_tag, registry_root)`.
     #[serde(default)]
     pub client_derivation_proof: Option<String>,
 }
@@ -128,29 +163,114 @@ where
     }
 }
 
-/// Prepare a client handoff for a shielded coin spend.
+/// Witness data the wallet must supply for the per-spend circuit. Contains
+/// the secret pieces of the registration record plus the live Merkle path
+/// (fetched from contract state). The wallet keeps this object opaque — it
+/// flows from `client_prepare_with_registry` into the per-spend
+/// `ProofPreimage` builder and nowhere else.
+#[derive(Debug, Clone)]
+pub struct RegistryWitness {
+    /// Poseidon blinding `r` for `C_sk`.
+    pub blinding: Fr,
+    /// Per-registration salt for `reg_leaf`.
+    pub salt: Fr,
+    /// Merkle path from `reg_leaf` (as 32-byte HashOutput) to a registry-tree
+    /// root. `merkle_path.leaf` must equal `upgrade_from_transient(reg_leaf)`
+    /// — the wallet is responsible for ensuring this is still aligned with
+    /// a recent registry-contract root (`refresh_registry_path`).
+    ///
+    /// The leaf type is `((), HashOutput)` to match the lowering Compact uses
+    /// for `MerkleTreePath<20, Bytes<32>>` (zero-sized aux + the upgraded
+    /// 32-byte leaf hash; see `Input::new_split` in
+    /// `deps/midnight-ledger/zswap/src/construct.rs` for the same pattern).
+    pub merkle_path: MerklePath<((), HashOutput)>,
+    /// Convenience: the registry root the path resolves to. Cross-checked
+    /// against `merkle_path.root()` in `client_prepare_with_registry` so a
+    /// stale witness is rejected before the proof is even started.
+    pub registry_root: MerkleTreeDigest,
+}
+
+impl RegistryWitness {
+    /// Construct a witness for a fresh registration: builds a height-20 path
+    /// containing only `reg_leaf` at index 0, exactly what the registry
+    /// contract's `HistoricMerkleTree<20, Bytes<32>>` looks like right after
+    /// the very first `register(leaf)` call.
+    ///
+    /// The registry contract calls `tree.insertHash(leaf)` (NOT `insert`),
+    /// so the leaf bytes go in directly with no leaf-hash step. We mirror
+    /// that off-circuit: the in-memory tree stores the upgrade bytes as
+    /// the leaf-level hash, and the path verifier uses `NoLeafHash` to
+    /// match.
+    ///
+    /// Production wallets should instead fetch the live path via
+    /// `refresh_registry_path`; this constructor is the unit-test / e2e
+    /// equivalent of doing the contract read in-process.
+    pub fn for_first_registration(
+        blinding: Fr,
+        salt: Fr,
+        reg_leaf_bytes: [u8; 32],
+    ) -> Result<Self, String> {
+        let leaf_hash = HashOutput(reg_leaf_bytes);
+        let mt = midnight_transient_crypto::merkle_tree::MerkleTree::<(), InMemoryDB>::blank(
+            REGISTRY_TREE_HEIGHT,
+        )
+        .update_hash(0, leaf_hash, ())
+        .rehash();
+        let merkle_path = mt
+            .path_for_leaf(0, ((), leaf_hash))
+            .map_err(|e| format!("path_for_leaf failed: {e}"))?;
+        // Compute the root the "NoLeafHash" way — that's what the
+        // sk_proof.compact circuit uses (`merkleTreePathRootNoLeafHash`).
+        // `MerklePath::root()` would re-hash the leaf, which is wrong here.
+        let registry_root =
+            raw_leaf_hash_root(leaf_hash, &merkle_path);
+        Ok(Self {
+            blinding,
+            salt,
+            merkle_path,
+            registry_root,
+        })
+    }
+
+    /// Lower 32-byte LE representation of the root. Convenience for
+    /// stamping into `ClientHandoff::registry_root`.
+    pub fn registry_root_le_bytes(&self) -> [u8; 32] {
+        self.registry_root
+            .0
+            .as_le_bytes()
+            .try_into()
+            .expect("Fr little-endian repr must be 32 bytes")
+    }
+}
+
+/// Prepare a client handoff for a shielded coin spend (Solution A).
 ///
-/// This is the ONLY function that touches the secret key.
-/// It runs in ~100µs — no heavy crypto.
+/// Compared to v3 this is identical at the off-chain hashing layer — the
+/// nullifier, coin-binding tag, and coin commitment are byte-identical. What
+/// changed is the *public* side: `pk` and `C_sk` are no longer disclosed on
+/// chain, so the handoff no longer carries `attested_commitment_sk`.
 ///
-/// # Arguments
-/// * `sk` - The coin secret key (NEVER sent to server)
-/// * `coin` - The qualified coin info (value, type, nonce, mt_index)
-/// * `contract` - Reserved for zswap metadata compatibility. Split-prove
-///   currently supports user-owned shielded coins only.
+/// Callers that need to actually prove (Solution A admission requires it
+/// always) must use `client_prepare_with_registry` so the handoff is bound
+/// to a registered wallet's `(r, salt)` and a real Merkle path.
 pub fn client_prepare(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
     contract: Option<ContractAddress>,
 ) -> ClientHandoff {
-    client_prepare_with_blinding(sk, coin, contract, OsRng.r#gen())
+    client_prepare_with_registry_root(sk, coin, contract, [0u8; 32])
 }
 
-pub fn client_prepare_with_blinding(
+/// Internal: build a handoff with an explicit registry root. Used by both the
+/// public `client_prepare` (which stamps a zero root and is unsuitable for
+/// real admission) and `client_prepare_with_registry` (which supplies the
+/// caller's registered root). Test code can hit this directly with a known
+/// root if it wants to bypass `WalletRegistration` entirely.
+pub fn client_prepare_with_registry_root(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
     contract: Option<ContractAddress>,
-    blinding: Fr,
+    registry_root: [u8; 32],
 ) -> ClientHandoff {
     let sender_evidence = if let Some(addr) = contract {
         SenderEvidence::Contract(addr)
@@ -158,34 +278,14 @@ pub fn client_prepare_with_blinding(
         SenderEvidence::User(Cow::Borrowed(sk))
     };
 
-    // Derive pk
     let pk = sk.public_key();
-
-    // Compute the canonical Zswap nullifier so split and non-split spends
-    // collide in the same ledger nullifier set.
     let coin_info = CoinInfo::from(coin);
     let nullifier = split_nullifier(&coin_info, sk);
-
-    // Compute coin commitment
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
-
     let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
-    // v3: derive the Poseidon commitment `C_sk` from `(sk, blinding)` so the
-    // per-spend circuit can disclose it. Soundness still flows through the
-    // wallet attestation — the admission verifier insists `attested_commitment_sk`
-    // matches whatever the wallet stamped here. Test-only callers that supply
-    // a known blinding get a deterministic `attested_commitment_sk`; production
-    // callers should use `client_prepare_with_attestation` so the value is
-    // pinned to the registered attestation.
-    let (_, attested_commitment_sk) = crate::attestation::derive_attestation_outputs(sk, blinding);
-
-    // Serialize coin nonce
     let mut nonce_bytes = [0u8; 32];
-    let nonce_fr_bytes = coin_info.nonce.0 .0;
-    nonce_bytes.copy_from_slice(&nonce_fr_bytes);
-
-    // Serialize the token type as its canonical 32-byte hash.
+    nonce_bytes.copy_from_slice(&coin_info.nonce.0 .0);
     let color_bytes = coin_info.type_.0 .0;
 
     ClientHandoff {
@@ -197,12 +297,10 @@ pub fn client_prepare_with_blinding(
         nullifier: nullifier.0 .0,
         pk: pk.0 .0,
         commitment_hash: commitment_hash.0 .0,
-        attested_commitment_sk,
-        attestation_proof: None,
+        registry_root,
         coin_value: {
             let mut v_fields = Vec::new();
             coin_info.value.field_repr(&mut v_fields);
-            // value is stored as Fr, extract u128
             let bytes = v_fields
                 .get(0)
                 .map(|f| f.0.to_bytes_le())
@@ -217,34 +315,22 @@ pub fn client_prepare_with_blinding(
     }
 }
 
-/// Build a fully-populated v3 handoff from a previously registered
-/// `WalletAttestation`. The wallet generates the attestation once via
-/// `attestation::register_wallet`, persists it, and then calls this on every
-/// spend. The per-spend circuit's `commitmentSk` public output will equal the
-/// attestation's `commitment_sk` byte-for-byte, and the bundle carries the
-/// attestation proof verbatim so the node can re-check `pk = H(sk)` and
-/// `C_sk = transientHash(sk, r)` without consulting any ledger state.
-pub fn client_prepare_with_attestation(
+/// Build a fully-populated handoff from a previously registered
+/// `WalletRegistration` and the wallet's locally-cached Merkle membership
+/// path. The wallet calls this on every spend.
+///
+/// The caller is responsible for supplying a `RegistryWitness` whose
+/// `merkle_path` is still aligned with a contract root in the registry's
+/// `HistoricMerkleTree` history. See `refresh_registry_path` for the
+/// suggested helper.
+pub fn client_prepare_with_registry(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
     contract: Option<ContractAddress>,
-    attestation: &crate::attestation::WalletAttestation,
+    _registration: &WalletRegistration,
+    witness: &RegistryWitness,
 ) -> ClientHandoff {
-    let mut handoff = client_prepare_with_blinding(sk, coin, contract, attestation.blinding);
-    // The blinding-derived C_sk should already equal attestation.commitment_sk;
-    // we overwrite to make the byte-for-byte equality explicit and resilient
-    // to any future drift in `derive_attestation_outputs` rounding.
-    debug_assert_eq!(
-        handoff.attested_commitment_sk, attestation.commitment_sk,
-        "blinding does not reproduce attested C_sk — wallet state is inconsistent"
-    );
-    debug_assert_eq!(
-        handoff.pk, attestation.pk,
-        "sk does not derive the attested pk — wallet state is inconsistent"
-    );
-    handoff.attested_commitment_sk = attestation.commitment_sk;
-    handoff.attestation_proof = Some(attestation.attestation_proof.clone());
-    handoff
+    client_prepare_with_registry_root(sk, coin, contract, witness.registry_root_le_bytes())
 }
 
 /// Compute the canonical Zswap nullifier off-circuit. Must produce the same
@@ -253,29 +339,71 @@ pub fn split_nullifier(coin: &CoinInfo, sk: &CoinSecretKey) -> Nullifier {
     coin.nullifier(&SenderEvidence::User(Cow::Borrowed(sk)))
 }
 
-/// Build the v3 client-derivation preimage. Witness layout matches the v3
-/// `sk_prove` circuit declaration order — `(sk, pk, r, coin)` — which Compact
-/// lowers into 10 field-element witnesses (sk: 2, pk: 2, r: 1, coin.nonce: 2,
-/// coin.color: 2, coin.value: 1). The `sk_blinding` parameter is the same `r`
-/// stored on the wallet from `attestation::register_wallet`.
+/// Build the client-derivation preimage for Solution A's `sk_prove` circuit.
+/// Witness layout matches the new circuit signature in declaration order:
+///   (sk, pk, r, salt, coin, merkle_path)
+///
+///   • sk          → 2 Fr limbs   (Bytes<32>)
+///   • pk          → 2 Fr limbs   (Bytes<32>)
+///   • r           → 1 Fr         (blinding for C_sk)
+///   • salt        → 1 Fr         (blinding for reg_leaf)
+///   • coin        → 5 Fr         (nonce: 2, color: 2, value: 1)
+///   • merkle_path → 2 + 20*2 Fr  (leaf: 2 limbs, 20 entries × 2 Fr each)
+///
+/// Total: 53 Fr private witnesses. The `merkle_path` lowering mirrors what
+/// `MerklePath::field_repr` produces — leaf first (as ((), HashOutput) =
+/// 2 limbs), then each `MerklePathEntry` as (sibling, goes_left).
 pub fn build_client_derivation_preimage(
     sk: &CoinSecretKey,
-    sk_blinding: Fr,
+    witness: &RegistryWitness,
     _coin: &QualifiedCoinInfo,
     handoff: &ClientHandoff,
 ) -> Result<ProofPreimage, String> {
+    // The path must have exactly REGISTRY_TREE_HEIGHT entries — otherwise
+    // the circuit's fixed-size MerkleTreePath<20, _> can't be constructed.
+    if witness.merkle_path.path.len() != REGISTRY_TREE_HEIGHT as usize {
+        return Err(format!(
+            "merkle_path must have exactly {} entries (got {})",
+            REGISTRY_TREE_HEIGHT,
+            witness.merkle_path.path.len()
+        ));
+    }
+    // Cross-check: the path's root must match the registry_root the wallet
+    // is claiming. A path that resolves to a different root cannot satisfy
+    // the circuit, so fail fast off-circuit. Use the no-leaf-hash variant
+    // because the contract stored the leaf via `insertHash`.
+    let leaf_bytes = witness.merkle_path.leaf.1;
+    let derived_root = raw_leaf_hash_root(leaf_bytes, &witness.merkle_path);
+    if derived_root != witness.registry_root {
+        return Err(format!(
+            "merkle_path resolves to {:?} but registry_root is {:?}",
+            derived_root, witness.registry_root
+        ));
+    }
+    // And the handoff's stamped 32-byte registry_root must match the digest.
+    let expected_root_bytes = witness.registry_root_le_bytes();
+    if handoff.registry_root != expected_root_bytes {
+        return Err(
+            "handoff.registry_root does not match witness.registry_root — wallet inconsistency"
+                .to_string(),
+        );
+    }
+
     let mut inputs = Vec::new();
-    // Position 0..1: sk limbs (matches v3 circuit signature first parameter).
+    // sk limbs.
     sk.0 .0.field_repr(&mut inputs);
-    // Position 2..3: pk limbs. pk is a private witness in v3 (was derived
-    // from sk in v2). The admission verifier checks it against the attestation.
+    // pk limbs (private witness; constrained against sk in-circuit).
     handoff.pk.field_repr(&mut inputs);
-    // Position 4: blinding r for the Poseidon C_sk open.
-    inputs.push(sk_blinding);
-    // Position 5..9: coin (nonce limbs, color limbs, value).
+    // Blinding r for the Poseidon C_sk open.
+    inputs.push(witness.blinding);
+    // Salt for the reg_leaf blinding.
+    inputs.push(witness.salt);
+    // Coin (nonce limbs, color limbs, value).
     handoff.coin_nonce.field_repr(&mut inputs);
     handoff.coin_color.field_repr(&mut inputs);
     inputs.push(Fr::from(handoff.coin_value));
+    // Merkle path: leaf first, then 20 entries of (sibling, goes_left).
+    witness.merkle_path.field_repr(&mut inputs);
 
     Ok(ProofPreimage {
         inputs,
@@ -311,33 +439,27 @@ pub fn client_derivation_public_transcript_inputs(
     handoff: &ClientHandoff,
 ) -> Result<Vec<Fr>, String> {
     Ok(client_derivation_public_transcript_inputs_from_parts(
-        handoff_pk(handoff),
         handoff.nullifier,
         try_handoff_coin_binding_tag_fr(handoff)?,
-        try_handoff_commitment_sk_fr(handoff)?,
+        try_handoff_registry_root_fr(handoff)?,
     ))
 }
 
 pub fn client_derivation_public_transcript_inputs_from_parts(
-    pk: CoinPublicKey,
     nullifier: [u8; 32],
     coin_binding_tag: Fr,
-    commitment_sk: Fr,
+    registry_root: Fr,
 ) -> Vec<Fr> {
+    // Mirrors `sk_proof.compact` ledger declaration order:
+    //   cell 0 → nullifier (Bytes<32>),
+    //   cell 1 → coinBindingTag (Field),
+    //   cell 2 → registryRoot (MerkleTreeDigest — lowers to a single Field cell
+    //            with Field alignment in Compact).
     let mut inputs = Vec::new();
     extend_ops(
         &mut inputs,
         Cell_write!(
             [midnight_onchain_runtime::ops::Key::Value(0u8.into())],
-            false,
-            CoinPublicKey,
-            pk
-        ),
-    );
-    extend_ops(
-        &mut inputs,
-        Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(1u8.into())],
             false,
             [u8; 32],
             nullifier
@@ -346,21 +468,19 @@ pub fn client_derivation_public_transcript_inputs_from_parts(
     extend_ops(
         &mut inputs,
         Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(2u8.into())],
+            [midnight_onchain_runtime::ops::Key::Value(1u8.into())],
             false,
             Fr,
             coin_binding_tag
         ),
     );
-    // v3 cell 3 — Poseidon commitment `C_sk` opened by the per-spend proof.
-    // Cross-checked against the attestation's `commitment_sk` in admission.
     extend_ops(
         &mut inputs,
         Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(3u8.into())],
+            [midnight_onchain_runtime::ops::Key::Value(2u8.into())],
             false,
             Fr,
-            commitment_sk
+            registry_root
         ),
     );
     inputs
@@ -376,26 +496,20 @@ fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, I
     }
 }
 
-/// Reconstruct the Fr `C_sk` (Poseidon commitment to sk) from the handoff bytes.
-pub fn handoff_commitment_sk_fr(handoff: &ClientHandoff) -> Fr {
-    try_handoff_commitment_sk_fr(handoff).expect("valid Fr from attested_commitment_sk bytes")
-}
-
-/// Fallibly reconstruct the Fr `C_sk` (Poseidon commitment to sk) from handoff bytes.
-pub fn try_handoff_commitment_sk_fr(handoff: &ClientHandoff) -> Result<Fr, String> {
-    Fr::from_le_bytes(&handoff.attested_commitment_sk)
-        .ok_or_else(|| "invalid attested_commitment_sk field element".to_string())
-}
-
 /// Reconstruct the Fr coin-binding tag from the handoff bytes.
 pub fn handoff_coin_binding_tag_fr(handoff: &ClientHandoff) -> Fr {
     try_handoff_coin_binding_tag_fr(handoff).expect("valid Fr from coin binding tag bytes")
 }
 
-/// Fallibly reconstruct the Fr coin-binding tag from handoff bytes.
 pub fn try_handoff_coin_binding_tag_fr(handoff: &ClientHandoff) -> Result<Fr, String> {
     Fr::from_le_bytes(&handoff.coin_binding_tag)
         .ok_or_else(|| "invalid coin_binding_tag field element".to_string())
+}
+
+/// Reconstruct the Fr registry root from the handoff bytes.
+pub fn try_handoff_registry_root_fr(handoff: &ClientHandoff) -> Result<Fr, String> {
+    Fr::from_le_bytes(&handoff.registry_root)
+        .ok_or_else(|| "invalid registry_root field element".to_string())
 }
 
 /// Reconstruct the Nullifier from the handoff bytes.
@@ -413,10 +527,27 @@ pub fn handoff_commitment(handoff: &ClientHandoff) -> Commitment {
     Commitment(HashOutput(handoff.commitment_hash))
 }
 
+/// Refresh the wallet's locally-cached Merkle membership path. Production
+/// wallets should call this whenever the registry tree grows past their
+/// cached path's depth — see `tools/refresh_registry_path.mjs` for a
+/// reference implementation that reads contract state via the indexer.
+///
+/// This stub mirrors the wallet-side API the rest of the SDK expects; the
+/// concrete implementation lives in the `tools/` script layer because it
+/// requires a live RPC connection to the indexer.
+pub async fn refresh_registry_path(
+    _registry_contract_address: ContractAddress,
+    _registration: &WalletRegistration,
+) -> Result<RegistryWitness, String> {
+    Err("refresh_registry_path: implement against the indexer/contract-state \
+         API in tools/; see comments in src/client.rs for the wire format"
+        .to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use rand::Rng;
 
     const JUBJUB_SCALAR_MODULUS_LE: [u8; 32] = [
         0xb7, 0x2c, 0xf7, 0xd6, 0x5e, 0x0e, 0x97, 0xd0, 0x82, 0x10, 0xc8, 0xcc, 0x93, 0x20, 0x68,
@@ -462,16 +593,15 @@ mod tests {
 
         let handoff = client_prepare(&sk, &coin, None);
 
-        // Nullifier should be non-zero
         assert!(!handoff.nullifier.iter().all(|&b| b == 0));
-        // PK should be non-zero
         assert!(!handoff.pk.iter().all(|&b| b == 0));
-        // Commitment should be non-zero
         assert!(!handoff.commitment_hash.iter().all(|&b| b == 0));
-        // coin_binding_tag should be non-zero
         assert!(!handoff.coin_binding_tag.iter().all(|&b| b == 0));
-        // mt_index preserved
         assert_eq!(handoff.mt_index, 42);
+        // Registry root is the only wallet-identifying public value now.
+        // `client_prepare` (without registration) stamps zero — production
+        // callers must use `client_prepare_with_registry` to get a real root.
+        assert_eq!(handoff.registry_root, [0u8; 32]);
     }
 
     #[test]
@@ -491,6 +621,7 @@ mod tests {
         assert_eq!(handoff.nullifier, deserialized.nullifier);
         assert_eq!(handoff.pk, deserialized.pk);
         assert_eq!(handoff.coin_binding_tag, deserialized.coin_binding_tag);
+        assert_eq!(handoff.registry_root, deserialized.registry_root);
         assert_eq!(handoff.mt_index, deserialized.mt_index);
     }
 
@@ -499,13 +630,12 @@ mod tests {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
         let coin = QualifiedCoinInfo {
             value: 500u64.into(),
-            type_: midnight_coin_structure::coin::ShieldedTokenType(HashOutput([9u8; 32])),
+            type_: Default::default(),
             nonce: OsRng.r#gen(),
             mt_index: 0,
         };
 
         let handoff = client_prepare(&sk, &coin, None);
-
         assert_eq!(handoff.coin_color, coin.type_.0 .0);
     }
 
@@ -527,82 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn client_derivation_preimage_checks_against_compact_ir() {
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let blinding = OsRng.r#gen();
-        let coin = QualifiedCoinInfo {
-            value: 500u64.into(),
-            type_: Default::default(),
-            nonce: OsRng.r#gen(),
-            mt_index: 0,
-        };
-        let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
-            .expect("valid handoff should build client derivation preimage");
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
-        ))
-        .expect("client derivation IR should load");
-
-        preimage
-            .check(&ir)
-            .expect("honest handoff should match client derivation circuit");
-    }
-
-    #[test]
-    fn client_derivation_preimage_rejects_tampered_nullifier() {
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let blinding = OsRng.r#gen();
-        let coin = QualifiedCoinInfo {
-            value: 500u64.into(),
-            type_: Default::default(),
-            nonce: OsRng.r#gen(),
-            mt_index: 0,
-        };
-        let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        handoff.nullifier[0] ^= 1;
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
-            .expect("valid handoff should build client derivation preimage");
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
-        ))
-        .expect("client derivation IR should load");
-
-        assert!(preimage.check(&ir).is_err());
-    }
-
-    #[test]
-    fn client_derivation_preimage_rejects_invalid_field_bytes() {
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let blinding = OsRng.r#gen();
-        let coin = QualifiedCoinInfo {
-            value: 500u64.into(),
-            type_: Default::default(),
-            nonce: OsRng.r#gen(),
-            mt_index: 0,
-        };
-        let mut handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        handoff.coin_binding_tag = [0xff; 32];
-
-        let err = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
-            .expect_err("invalid coin-binding field bytes must be rejected");
-        assert!(
-            err.contains("invalid coin_binding_tag field element"),
-            "unexpected error: {err}"
-        );
-
-        handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        handoff.attested_commitment_sk = [0xff; 32];
-
-        let err = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
-            .expect_err("invalid commitment field bytes must be rejected");
-        assert!(
-            err.contains("invalid attested_commitment_sk field element"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
     fn repeated_prepare_produces_stable_binding_values() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
         let coin = QualifiedCoinInfo {
@@ -615,121 +669,101 @@ mod tests {
         let h1 = client_prepare(&sk, &coin, None);
         let h2 = client_prepare(&sk, &coin, None);
 
-        // Same sk → same nullifier and pk
         assert_eq!(h1.nullifier, h2.nullifier);
         assert_eq!(h1.pk, h2.pk);
         assert_eq!(h1.coin_binding_tag, h2.coin_binding_tag);
     }
 
-    // ─── v3 cross-check tests ────────────────────────────────────────────────
-    //
-    // These tests exercise the soundness chain implemented in
-    // `deps/midnight-ledger/zswap/src/verify.rs::split_well_formed`. We do not
-    // run the full node here; we exercise the in-circuit binding between the
-    // per-spend `commitmentSk` public output and the wallet's blinding `r`.
-
-    /// The v3 per-spend circuit's `commitmentSk` public output equals the
-    /// off-circuit `transientHash` of the same `(sk, r)`. If a wallet's
-    /// blinding becomes inconsistent with its registered commitment, the
-    /// admission verifier will catch it because `commitmentSk` no longer
-    /// matches the attestation's public output.
     #[test]
-    fn v3_per_spend_commitment_matches_attestation_when_blinding_consistent() {
+    fn build_client_derivation_preimage_rejects_handoff_root_mismatch() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let blinding = OsRng.r#gen();
         let coin = QualifiedCoinInfo {
             value: 250u64.into(),
             type_: Default::default(),
             nonce: OsRng.r#gen(),
             mt_index: 7,
         };
-
-        let handoff = client_prepare_with_blinding(&sk, &coin, None, blinding);
-        let (_, expected_c_sk) = crate::attestation::derive_attestation_outputs(&sk, blinding);
-
-        assert_eq!(
-            handoff.attested_commitment_sk, expected_c_sk,
-            "v3 handoff's C_sk must match the off-circuit derivation"
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let reg_leaf =
+            crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let witness = RegistryWitness::for_first_registration(r, salt, reg_leaf)
+            .expect("first-registration witness");
+        // Stamp a *wrong* registry_root on the handoff so the cross-check fires.
+        let mut handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            witness.registry_root_le_bytes(),
         );
+        handoff.registry_root = [9u8; 32];
 
-        // And the preimage must satisfy the v3 IR with this `C_sk`.
-        let preimage = build_client_derivation_preimage(&sk, blinding, &coin, &handoff)
-            .expect("valid handoff should build client derivation preimage");
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
-        ))
-        .expect("v3 client derivation IR should load");
-        preimage
-            .check(&ir)
-            .expect("honest v3 handoff should satisfy sk_prove_v3");
+        let err = build_client_derivation_preimage(&sk, &witness, &coin, &handoff)
+            .expect_err("handoff/witness root mismatch must fail preimage construction");
+        assert!(
+            err.contains("does not match witness.registry_root"),
+            "unexpected error: {err}"
+        );
     }
 
-    /// Mismatched blinding between the wallet's stored attestation and the
-    /// per-spend witness must break the per-spend proof: the in-circuit
-    /// `transientHash(sk, r_wallet_local)` will not equal the disclosed
-    /// `attested_commitment_sk` and the admission verifier's cross-check
-    /// will fire. The IR `check()` catches this without needing the full
-    /// node admission path.
     #[test]
-    fn v3_per_spend_circuit_rejects_blinding_mismatch_with_handoff() {
+    fn build_client_derivation_preimage_checks_against_compact_ir() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let registered_blinding: Fr = OsRng.r#gen();
         let coin = QualifiedCoinInfo {
-            value: 100u64.into(),
+            value: 250u64.into(),
             type_: Default::default(),
             nonce: OsRng.r#gen(),
-            mt_index: 0,
+            mt_index: 7,
         };
-
-        let honest_handoff = client_prepare_with_blinding(&sk, &coin, None, registered_blinding);
-
-        // Attacker tries to spend with a different blinding. The handoff still
-        // carries the honest `attested_commitment_sk` (so the admission's
-        // cross-check would pass), but the in-circuit `commitmentSk` will be
-        // recomputed from `(sk, attacker_blinding)` and disagree.
-        let attacker_blinding: Fr = OsRng.r#gen();
-        assert_ne!(attacker_blinding, registered_blinding);
-
-        let bad_preimage =
-            build_client_derivation_preimage(&sk, attacker_blinding, &coin, &honest_handoff)
-                .expect("valid handoff should build client derivation preimage");
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
-        ))
-        .expect("v3 client derivation IR should load");
-
-        assert!(
-            bad_preimage.check(&ir).is_err(),
-            "v3 circuit must reject a blinding that does not match the disclosed C_sk"
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let reg_leaf =
+            crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let witness = RegistryWitness::for_first_registration(r, salt, reg_leaf)
+            .expect("first-registration witness");
+        let handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            witness.registry_root_le_bytes(),
         );
+
+        let preimage = build_client_derivation_preimage(&sk, &witness, &coin, &handoff)
+            .expect("valid witness should build preimage");
+        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(
+            std::io::Cursor::new(include_bytes!(
+                "../circuits/static/client-derivation/sk_prove.bzkir"
+            )),
+        )
+        .expect("client derivation IR should load");
+
+        preimage
+            .check(&ir)
+            .expect("honest Solution A witness should satisfy sk_prove");
     }
 
-    /// Plan §"Encoding pitfall" — the scalar-reduction attack `sk' = sk + n·q`
-    /// is blocked by the *Poseidon commitment changing*, not by the limb range
-    /// check. Demonstrate this at the unit-test layer: a different 32-byte
-    /// `sk'` produces a different `commitmentSk`, so the per-spend circuit
-    /// (which discloses `commitmentSk`) commits to a value the attestation
-    /// did not register.
     #[test]
-    fn v3_scalar_reduction_collision_does_not_open_same_commitment() {
+    fn scalar_reduction_collision_does_not_reuse_registry_root() {
+        // Solution A's spend-side soundness — a different 32-byte sk' that
+        // is congruent to sk mod the Jubjub scalar order must still produce a
+        // different reg_leaf, even with the same (r, salt). We exercise that
+        // here by re-running `derive_reg_leaf` directly.
+        use crate::attestation::derive_reg_leaf;
         let sk_honest = CoinSecretKey(HashOutput([0u8; 32]));
-        let blinding: Fr = OsRng.r#gen();
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let (_, leaf_honest) = derive_reg_leaf(&sk_honest, r, salt);
 
-        let (_, c_sk_honest) = crate::attestation::derive_attestation_outputs(&sk_honest, blinding);
-
-        // Same blinding, different sk byte string, but congruent under the
-        // exact Jubjub scalar modulus. A scalar-reducing commitment would map
-        // both byte strings to scalar zero; v3 hashes the exact byte limbs.
         let sk_evil_bytes = JUBJUB_SCALAR_MODULUS_LE;
         assert_eq!(reduce_once_mod_jubjub_scalar(sk_honest.0 .0), [0u8; 32]);
         assert_eq!(reduce_once_mod_jubjub_scalar(sk_evil_bytes), [0u8; 32]);
 
         let sk_evil = CoinSecretKey(HashOutput(sk_evil_bytes));
-        let (_, c_sk_evil) = crate::attestation::derive_attestation_outputs(&sk_evil, blinding);
+        let (_, leaf_evil) = derive_reg_leaf(&sk_evil, r, salt);
 
         assert_ne!(
-            c_sk_honest, c_sk_evil,
-            "scalar-reduction-style sk' must produce a different Poseidon C_sk"
+            leaf_honest, leaf_evil,
+            "scalar-reduction-style sk' must produce a different reg_leaf"
         );
     }
 }

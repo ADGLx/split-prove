@@ -1,25 +1,27 @@
-//! Server-side split proving.
+//! Server-side split proving (Solution A).
 //!
-//! Receives a `ClientHandoff`, builds `ProofPreimage` without raw sk,
-//! and proves using `prove_split()` with committed instances.
+//! Receives a `ClientHandoff`, builds `ProofPreimage` without raw `sk`, and
+//! proves using `prove_split()` with committed instances. The new public
+//! inputs for split admission are `(coin_binding_tag, registry_root)` —
+//! `pk` and `coin_commitment` are no longer disclosed on chain.
 
 use crate::client::{
     handoff_commitment, handoff_nullifier, handoff_pk, try_handoff_coin_binding_tag_fr,
-    try_handoff_commitment_sk_fr, ClientHandoff,
+    ClientHandoff,
 };
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::QualifiedInfo as QualifiedCoinInfo;
 use midnight_coin_structure::coin::ShieldedTokenType;
 use midnight_storage::db::DB;
 use midnight_storage::Storable;
-use midnight_transient_crypto::merkle_tree::MerkleTree;
+use midnight_transient_crypto::curve::Fr;
+use midnight_transient_crypto::merkle_tree::{MerkleTree, MerkleTreeDigest};
 use midnight_transient_crypto::proofs::{Proof, ProofPreimage};
 use midnight_zswap::{AuthorizedClaim, Input};
 use rand::rngs::OsRng;
 use std::fmt::Debug;
 
-/// Build a spend ProofPreimage from a ClientHandoff.
-/// The resulting ProofPreimage has pk/coin data in its inputs, but never raw sk.
+/// Build a spend ProofPreimage from a ClientHandoff (Solution A).
 pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
     handoff: &ClientHandoff,
     tree: &MerkleTree<A, D>,
@@ -30,7 +32,9 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
 
     let coin = reconstruct_coin(handoff)?;
     let coin_binding_tag = try_handoff_coin_binding_tag_fr(handoff)?;
-    let commitment_sk = try_handoff_commitment_sk_fr(handoff)?;
+    let registry_root_fr = Fr::from_le_bytes(&handoff.registry_root)
+        .ok_or_else(|| "invalid registry_root field element".to_string())?;
+    let registry_root = MerkleTreeDigest(registry_root_fr);
     let client_derivation_proof = handoff
         .client_derivation_proof
         .as_deref()
@@ -40,17 +44,6 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         .map(Proof)
         .ok_or("client derivation proof is required for split spend preimages")?;
 
-    // v3: one-time wallet attestation proof. Travels alongside the per-spend
-    // client proof; the node verifier re-checks it before admitting the bundle.
-    let attestation_proof = handoff
-        .attestation_proof
-        .as_deref()
-        .map(hex::decode)
-        .transpose()
-        .map_err(|e| format!("decode attestation proof: {e}"))?
-        .map(Proof)
-        .ok_or("attestation proof is required for split spend preimages (v3)")?;
-
     Input::new_split(
         &mut OsRng,
         &coin,
@@ -59,9 +52,8 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
         handoff_commitment(handoff),
         handoff_pk(handoff),
         coin_binding_tag,
-        commitment_sk,
+        registry_root,
         client_derivation_proof,
-        attestation_proof,
         None,
         tree,
     )
@@ -71,9 +63,10 @@ pub fn build_spend_preimage<A: Debug + Storable<D>, D: DB>(
 
 /// Build a placeholder sign-split ProofPreimage from a ClientHandoff.
 ///
-/// This helper does not prove real secret-key authorization. It exists only for
-/// prototype wiring that needs the split key location and public-key-shaped
-/// inputs; do not present it as the authorization step in the split-send demo.
+/// This helper does not prove real secret-key authorization. It exists only
+/// for prototype wiring that needs the split key location and public-key-
+/// shaped inputs; do not present it as the authorization step in the
+/// split-send demo.
 pub fn build_sign_preimage(
     handoff: &ClientHandoff,
 ) -> Result<AuthorizedClaim<ProofPreimage>, String> {
@@ -133,12 +126,6 @@ mod tests {
 
     fn attach_dummy_client_proof(handoff: &mut ClientHandoff) {
         handoff.client_derivation_proof = Some(hex::encode([]));
-        // v3 requires the attestation proof on every split spend; the
-        // build_spend_preimage path treats it as opaque bytes (no verification
-        // happens here — that's the node admission verifier's job), so an
-        // empty proof is fine for unit tests that only exercise preimage
-        // construction.
-        handoff.attestation_proof = Some(hex::encode([]));
     }
 
     #[test]
@@ -168,7 +155,6 @@ mod tests {
         assert_eq!(input.proof.inputs[0], pk_fields[0]);
         assert_eq!(input.proof.inputs[1], pk_fields[1]);
 
-        // key_location should be spend-split
         assert_eq!(
             input.proof.key_location.0.as_ref(),
             "midnight/zswap/spend-split"
@@ -183,8 +169,7 @@ mod tests {
             nullifier: [2u8; 32],
             pk: [3u8; 32],
             commitment_hash: [4u8; 32],
-            attested_commitment_sk: [0u8; 32],
-            attestation_proof: None,
+            registry_root: [0u8; 32],
             coin_value: 123,
             coin_color: token.0 .0,
             coin_nonce: [5u8; 32],
@@ -265,12 +250,12 @@ mod tests {
 
         handoff = client_prepare(&sk, &coin, None);
         attach_dummy_client_proof(&mut handoff);
-        handoff.attested_commitment_sk = [0xff; 32];
+        handoff.registry_root = [0xff; 32];
 
         let err = build_spend_preimage::<(), InMemoryDB>(&handoff, &tree)
             .expect_err("invalid handoff field bytes must be rejected");
         assert!(
-            err.contains("invalid attested_commitment_sk field element"),
+            err.contains("invalid registry_root field element"),
             "unexpected error: {err}"
         );
     }

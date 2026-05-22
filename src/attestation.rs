@@ -1,20 +1,30 @@
-//! Wallet attestation circuit for split-prove v3.
+//! Wallet registration / attestation circuit for split-prove (Solution A).
 //!
-//! One-time per-wallet proof binding the canonical Zswap public key
-//! `pk = persistentHash("midnight:zswap-pk[v1]", sk)` to a Poseidon
-//! commitment `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)`.
+//! One-time per-wallet flow:
+//!   1. Wallet draws `r` and `salt` uniformly at random.
+//!   2. Computes `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)`.
+//!   3. Computes `reg_leaf = transientHash("midnight:wallet-reg[v1]", C_sk,
+//!      salt)`.
+//!   4. Runs the attestation circuit (this file's `register_wallet`) to
+//!      sanity-check the derivation against the canonical Zswap `pk = H(sk)`
+//!      witness binding.
+//!   5. Submits a contract tx calling `register(reg_leaf)` on the registry
+//!      contract.
+//!   6. After the registration tx is finalized, persists locally:
+//!         `WalletRegistration { r, salt, mt_index, leaf, merkle_path }`
+//!      The `merkle_path` is fetched from the contract state once the leaf
+//!      has been included.
 //!
-//! The per-spend `sk_prove` circuit (see `src/client.rs`) then *opens* `C_sk`
-//! to recover `sk` instead of paying SHA-256(sk) on every spend. The Rust
-//! admission verifier in `deps/midnight-ledger/zswap/src/verify.rs` cross-
-//! checks the attestation's `(pk, C_sk)` public outputs against the per-spend
-//! proof's `(pk, C_sk)` public outputs.
+//! Per-spend, the wallet feeds `(r, salt, merkle_path)` to the client circuit
+//! (see `src/client.rs`). The per-spend proof opens `reg_leaf` to a
+//! Merkle-path member; the admission verifier checks the resulting
+//! `registry_root` against the contract's `HistoricMerkleTree` root history.
 //!
-//! See `/Users/adgl/.claude/plans/currently-split-prove-works-and-tingly-breeze.md`
-//! and `docs/spike-results.md` for the design rationale and prover-key
-//! measurements that made Poseidon the chosen commitment primitive.
+//! Public outputs of the *attestation* circuit shrink to a single
+//! `reg_leaf` field — `pk` and `C_sk` are no longer disclosed. The chain of
+//! soundness now flows through the registry-membership path (see
+//! `circuits/sk_proof.compact` for the spend-side argument).
 
-use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::SecretKey as CoinSecretKey;
 use midnight_onchain_runtime::ops::Op;
 use midnight_onchain_runtime::program_fragments::Cell_write;
@@ -23,6 +33,7 @@ use midnight_onchain_runtime::state::StateValue;
 use midnight_storage::arena::Sp;
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
+use midnight_transient_crypto::hash::{transient_hash, upgrade_from_transient};
 use midnight_transient_crypto::proofs::{
     KeyLocation, ParamsProver, ParamsProverProvider, ProofPreimage, ProvingKeyMaterial, Resolver,
 };
@@ -35,50 +46,60 @@ use std::borrow::Cow;
 /// Resolver key location for the one-time wallet attestation circuit.
 pub const WALLET_ATTESTATION_KEY_LOCATION: &str = "split/wallet/attestation";
 
-/// Result of a one-time wallet attestation. Wallet persists this locally and
-/// attaches `attestation_proof_bytes` to every split-send bundle it emits.
+/// Result of a one-time wallet registration. The wallet persists this locally
+/// (encrypted, alongside `sk`) and references it on every split spend. None of
+/// `(r, salt)` ever leave the wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletAttestation {
-    /// Canonical Zswap public key: `pk = persistentHash("midnight:zswap-pk[v1]", sk)`.
-    pub pk: [u8; 32],
-
-    /// Poseidon commitment to `sk`:
-    /// `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)` as an Fr,
-    /// little-endian 32-byte serialization.
-    pub commitment_sk: [u8; 32],
-
-    /// Blinding factor used in the commitment. Stays on the wallet — *never*
-    /// sent to the server. Re-supplied to the per-spend circuit as a private
-    /// witness so it can recompute `C_sk` from `(sk, r)`.
+pub struct WalletRegistration {
+    /// Poseidon blinding for `C_sk = transientHash(sep_sk, sk, r)`.
     pub blinding: Fr,
-
-    /// Hex-encoded serialized proof produced by the attestation circuit.
-    /// Carried verbatim in every split-send bundle.
+    /// Per-registration blinding for
+    /// `reg_leaf = transientHash(sep_reg, C_sk, salt)`. Without `salt` an
+    /// observer who somehow learned `C_sk` could still link two
+    /// registrations of the same wallet; `salt` protects against that and
+    /// supports leaf rotation if a wallet ever needs it.
+    pub salt: Fr,
+    /// Registration leaf as a Field element. This is the value the
+    /// attestation circuit discloses on cell 0.
+    pub reg_leaf_fr: Fr,
+    /// Hex-encoded attestation proof. Optional in Solution A — kept on the
+    /// wallet as off-chain evidence that `reg_leaf` was correctly derived
+    /// from `(sk, r, salt)`, but never submitted on-chain.
     pub attestation_proof: String,
 }
 
-/// Public-input cell indices that the attestation circuit discloses.
-/// These mirror the `ledger publicKey` / `ledger commitmentSk` declarations
-/// at the top of `circuits/wallet_attestation.compact`.
-const CELL_PK: u8 = 0;
-const CELL_COMMITMENT_SK: u8 = 1;
+impl WalletRegistration {
+    /// The 32-byte form of `reg_leaf` the wallet submits to the registry
+    /// contract via `register(leaf)`. Matches the in-circuit
+    /// `upgradeFromTransient(regLeaf)` shape used in `sk_proof.compact` to
+    /// cross-check the witnessed Merkle path's leaf.
+    pub fn reg_leaf_bytes(&self) -> [u8; 32] {
+        midnight_transient_crypto::hash::upgrade_from_transient(self.reg_leaf_fr).0
+    }
+}
 
-/// Build the `ProofPreimage` for the attestation circuit. Inputs (in field-repr
-/// order) are: `sk` (2 Fr limbs) + `r` (1 Fr).
+/// Public-input cell index that the attestation circuit discloses. Mirrors
+/// the single `ledger regLeaf: Field;` declaration in
+/// `circuits/wallet_attestation.compact`.
+const CELL_REG_LEAF: u8 = 0;
+
+/// Build the `ProofPreimage` for the attestation circuit. Inputs (in
+/// field-repr order) are: `sk` (2 Fr limbs) + `r` (1 Fr) + `salt` (1 Fr).
 pub fn build_wallet_attestation_preimage(
     sk: &CoinSecretKey,
     r: Fr,
-    pk: [u8; 32],
-    commitment_sk: [u8; 32],
+    salt: Fr,
+    reg_leaf_fr: Fr,
 ) -> ProofPreimage {
     let mut inputs = Vec::new();
     sk.0 .0.field_repr(&mut inputs);
     inputs.push(r);
+    inputs.push(salt);
 
     ProofPreimage {
         inputs,
         private_transcript: Vec::new(),
-        public_transcript_inputs: wallet_attestation_public_transcript_inputs(pk, commitment_sk),
+        public_transcript_inputs: wallet_attestation_public_transcript_inputs(reg_leaf_fr),
         public_transcript_outputs: Vec::new(),
         binding_input: 0.into(),
         communications_commitment: None,
@@ -86,36 +107,20 @@ pub fn build_wallet_attestation_preimage(
     }
 }
 
-/// Encode the attestation's public outputs (`pk`, `C_sk`) as the on-chain
+/// Encode the attestation's public output (`reg_leaf`) as the on-chain
 /// transcript cells. The verifier reconstructs the same encoding to compare
 /// against the proof's claimed outputs.
-pub fn wallet_attestation_public_transcript_inputs(
-    pk: [u8; 32],
-    commitment_sk: [u8; 32],
-) -> Vec<Fr> {
-    use midnight_coin_structure::coin::PublicKey as CoinPublicKey;
-    let pk_typed = CoinPublicKey(HashOutput(pk));
-    let c_sk_fr = Fr::from_le_bytes(&commitment_sk).expect("valid Fr from commitment_sk bytes");
-
+pub fn wallet_attestation_public_transcript_inputs(reg_leaf_fr: Fr) -> Vec<Fr> {
     let mut inputs = Vec::new();
     extend_ops(
         &mut inputs,
         Cell_write!(
-            [midnight_onchain_runtime::ops::Key::Value(CELL_PK.into())],
-            false,
-            CoinPublicKey,
-            pk_typed
-        ),
-    );
-    extend_ops(
-        &mut inputs,
-        Cell_write!(
             [midnight_onchain_runtime::ops::Key::Value(
-                CELL_COMMITMENT_SK.into()
+                CELL_REG_LEAF.into()
             )],
             false,
             Fr,
-            c_sk_fr
+            reg_leaf_fr
         ),
     );
     inputs
@@ -133,7 +138,7 @@ fn extend_ops<const N: usize>(inputs: &mut Vec<Fr>, ops: [Op<ResultModeVerify, I
 
 /// Embedded artifacts for the attestation circuit. Mirror of
 /// `circuits/static/wallet-attestation/wallet_attest.*` compiled by
-/// `compactc 0.31.0`.
+/// `compactc`.
 pub fn wallet_attestation_proving_data() -> ProvingKeyMaterial {
     ProvingKeyMaterial {
         prover_key: include_bytes!("../circuits/static/wallet-attestation/wallet_attest.prover")
@@ -182,40 +187,36 @@ where
     }
 }
 
-/// Off-circuit derivation of `(pk, C_sk)` from `(sk, r)`, byte-identical to
-/// what the attestation circuit computes in-circuit. Used by the wallet to
-/// build the preimage *before* running the prover, and by tests to construct
-/// expected values.
+/// Off-circuit derivation of `(C_sk, reg_leaf_fr)` from `(sk, r, salt)`,
+/// byte-identical to what the attestation and per-spend circuits compute
+/// in-circuit.
 ///
-/// `pk` matches `coin_info.public_key()` (canonical Zswap derivation).
-/// `C_sk` is the Poseidon transient hash of `(sep, sk_lo, sk_hi, r)` where
-/// `(sk_lo, sk_hi)` are the 8-bit / 248-bit limbs Compact uses internally
-/// for `Bytes<32>` — same shared bit witnesses as the in-circuit gadget.
-pub fn derive_attestation_outputs(sk: &CoinSecretKey, r: Fr) -> ([u8; 32], [u8; 32]) {
-    use midnight_transient_crypto::hash::transient_hash;
-
-    let pk = sk.public_key().0 .0;
-
-    // Same field decomposition compactc emits for `Bytes<32>`: 8-bit limb +
-    // 248-bit limb, both little-endian. See the constrain_bits emissions in
-    // `circuits/static/wallet-attestation/wallet_attest.zkir`.
+/// `C_sk` is the Poseidon transient hash of `(sep_sk, sk_lo, sk_hi, r)` where
+/// `(sk_lo, sk_hi)` are the 8-bit / 248-bit limbs Compact uses internally for
+/// `Bytes<32>` — same shared bit witnesses as the in-circuit gadget.
+///
+/// `reg_leaf_fr = transientHash(sep_reg, C_sk, salt)` (the in-circuit `regLeaf`
+/// field). The wallet submits `upgrade_from_transient(reg_leaf_fr)` to the
+/// registry contract — that 32-byte form is what `WalletRegistration::
+/// reg_leaf_bytes` exposes.
+pub fn derive_reg_leaf(sk: &CoinSecretKey, r: Fr, salt: Fr) -> (Fr, Fr) {
     let mut sk_limbs = Vec::new();
     sk.0 .0.field_repr(&mut sk_limbs);
     debug_assert_eq!(sk_limbs.len(), 2, "Bytes<32> should produce 2 Fr limbs");
 
-    // Domain separator: ASCII "midnight:sk-commit[v1]" — exact bytes the
-    // attestation circuit loads via `load_imm`. Treated as a Field
-    // little-endian, matching the Compact `as Field` lowering.
-    let sep = ascii_to_fr_le("midnight:sk-commit[v1]");
+    let sep_sk = ascii_to_fr_le("midnight:sk-commit[v1]");
+    let c_sk_fr = transient_hash(&[sep_sk, sk_limbs[0], sk_limbs[1], r]);
 
-    let c_sk_fr = transient_hash(&[sep, sk_limbs[0], sk_limbs[1], r]);
-    let c_sk_bytes = c_sk_fr
-        .0
-        .to_bytes_le()
-        .try_into()
-        .expect("Fr le bytes is 32-byte");
+    let sep_reg = ascii_to_fr_le("midnight:wallet-reg[v1]");
+    let reg_leaf_fr = transient_hash(&[sep_reg, c_sk_fr, salt]);
+    (c_sk_fr, reg_leaf_fr)
+}
 
-    (pk, c_sk_bytes)
+/// Convenience: return the upgraded 32-byte form ready to submit to the
+/// registry contract.
+pub fn derive_reg_leaf_bytes(sk: &CoinSecretKey, r: Fr, salt: Fr) -> [u8; 32] {
+    let (_, reg_leaf_fr) = derive_reg_leaf(sk, r, salt);
+    upgrade_from_transient(reg_leaf_fr).0
 }
 
 fn ascii_to_fr_le(s: &str) -> Fr {
@@ -226,26 +227,34 @@ fn ascii_to_fr_le(s: &str) -> Fr {
     Fr::from_le_bytes(&buf).expect("ascii fits in Fr")
 }
 
-/// Generate a fresh wallet attestation. Run **once** at wallet setup. Stores
-/// the returned `WalletAttestation` on the wallet — the `blinding` is the
-/// secret half of the commitment and never leaves the wallet.
+/// Generate a fresh wallet registration. Run **once** at wallet setup. The
+/// returned `WalletRegistration` carries the secrets `(r, salt)`, which must
+/// be persisted on the wallet (and never leave it), plus the `reg_leaf` byte
+/// representation the wallet will submit to the registry contract via a
+/// `register(reg_leaf)` contract call.
+///
+/// The attestation proof attached to the result is kept locally on the wallet
+/// as evidence that `reg_leaf` was correctly derived from `(sk, r, salt)`. In
+/// Solution A this proof is *not* submitted on-chain (the contract's permissioning
+/// argument makes it unnecessary — see `circuits/wallet_registry.compact`).
 pub async fn register_wallet(
     sk: &CoinSecretKey,
     resolver: impl ParamsProverProvider + Resolver,
-) -> Result<WalletAttestation, midnight_transient_crypto::proofs::ProvingError> {
+) -> Result<WalletRegistration, midnight_transient_crypto::proofs::ProvingError> {
     let r: Fr = OsRng.r#gen();
-    let (pk, commitment_sk) = derive_attestation_outputs(sk, r);
+    let salt: Fr = OsRng.r#gen();
+    let (_c_sk, reg_leaf_fr) = derive_reg_leaf(sk, r, salt);
 
-    let preimage = build_wallet_attestation_preimage(sk, r, pk, commitment_sk);
+    let preimage = build_wallet_attestation_preimage(sk, r, salt, reg_leaf_fr);
     let (proof, _) = preimage
         .prove::<midnight_zkir::IrSource>(OsRng, &resolver, &resolver)
         .await?;
     let attestation_proof = hex::encode(proof.0);
 
-    Ok(WalletAttestation {
-        pk,
-        commitment_sk,
+    Ok(WalletRegistration {
         blinding: r,
+        salt,
+        reg_leaf_fr,
         attestation_proof,
     })
 }
@@ -289,12 +298,41 @@ mod tests {
     }
 
     #[test]
-    fn derive_outputs_matches_compact_ir() {
+    fn derive_reg_leaf_is_deterministic() {
         let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
         let r: Fr = OsRng.r#gen();
-        let (pk, commitment_sk) = derive_attestation_outputs(&sk, r);
+        let salt: Fr = OsRng.r#gen();
 
-        let preimage = build_wallet_attestation_preimage(&sk, r, pk, commitment_sk);
+        let (c1, l1) = derive_reg_leaf(&sk, r, salt);
+        let (c2, l2) = derive_reg_leaf(&sk, r, salt);
+        assert_eq!(c1, c2);
+        assert_eq!(l1, l2);
+    }
+
+    #[test]
+    fn derive_reg_leaf_distinguishes_salt() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let r: Fr = OsRng.r#gen();
+        let s1: Fr = OsRng.r#gen();
+        let s2: Fr = OsRng.r#gen();
+        assert_ne!(s1, s2);
+
+        let (_, l1) = derive_reg_leaf(&sk, r, s1);
+        let (_, l2) = derive_reg_leaf(&sk, r, s2);
+        assert_ne!(
+            l1, l2,
+            "different salt must yield different reg_leaf even with same (sk, r)"
+        );
+    }
+
+    #[test]
+    fn derive_reg_leaf_matches_compact_ir() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let (_c_sk, reg_leaf_fr) = derive_reg_leaf(&sk, r, salt);
+
+        let preimage = build_wallet_attestation_preimage(&sk, r, salt, reg_leaf_fr);
         let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
             include_bytes!("../circuits/static/wallet-attestation/wallet_attest.bzkir"),
         ))
@@ -306,61 +344,25 @@ mod tests {
     }
 
     #[test]
-    fn tampered_pk_rejected() {
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let r: Fr = OsRng.r#gen();
-        let (mut pk, commitment_sk) = derive_attestation_outputs(&sk, r);
-        pk[0] ^= 1; // flip a bit
-        let preimage = build_wallet_attestation_preimage(&sk, r, pk, commitment_sk);
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/wallet-attestation/wallet_attest.bzkir"),
-        ))
-        .expect("attestation IR should load");
-
-        assert!(
-            preimage.check(&ir).is_err(),
-            "tampered pk must not satisfy the attestation circuit"
-        );
-    }
-
-    #[test]
-    fn tampered_commitment_sk_rejected() {
-        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
-        let r: Fr = OsRng.r#gen();
-        let (pk, mut commitment_sk) = derive_attestation_outputs(&sk, r);
-        commitment_sk[0] ^= 1; // flip a bit
-        let preimage = build_wallet_attestation_preimage(&sk, r, pk, commitment_sk);
-        let ir = midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(Cursor::new(
-            include_bytes!("../circuits/static/wallet-attestation/wallet_attest.bzkir"),
-        ))
-        .expect("attestation IR should load");
-
-        assert!(
-            preimage.check(&ir).is_err(),
-            "tampered C_sk must not satisfy the attestation circuit"
-        );
-    }
-
-    #[test]
     fn scalar_reduction_collision_does_not_open_same_commitment() {
-        // Plan / Verification §3 — use the actual Jubjub scalar modulus `q`.
-        // A naive `sk_to_scalar(sk)` design would reduce both byte strings
-        // below to scalar zero. The v3 Poseidon commitment hashes the exact
-        // byte limbs, so `0` and `q` must produce different commitments.
+        // The Poseidon commitment hashes the exact byte limbs of `sk`. A
+        // different 32-byte string `sk'` that is congruent to `sk` mod the
+        // Jubjub scalar order must still produce a different `reg_leaf`.
         let sk = CoinSecretKey(HashOutput([0u8; 32]));
         let r: Fr = OsRng.r#gen();
-        let (_pk, c_sk_honest) = derive_attestation_outputs(&sk, r);
+        let salt: Fr = OsRng.r#gen();
+        let (_, reg_leaf_honest) = derive_reg_leaf(&sk, r, salt);
 
         let sk_evil_bytes = JUBJUB_SCALAR_MODULUS_LE;
         assert_eq!(reduce_once_mod_jubjub_scalar(sk.0 .0), [0u8; 32]);
         assert_eq!(reduce_once_mod_jubjub_scalar(sk_evil_bytes), [0u8; 32]);
 
         let sk_evil = CoinSecretKey(HashOutput(sk_evil_bytes));
-        let (_pk_evil, c_sk_evil) = derive_attestation_outputs(&sk_evil, r);
+        let (_, reg_leaf_evil) = derive_reg_leaf(&sk_evil, r, salt);
 
         assert_ne!(
-            c_sk_honest, c_sk_evil,
-            "a different 32-byte sk must produce a different Poseidon commitment"
+            reg_leaf_honest, reg_leaf_evil,
+            "a different 32-byte sk must produce a different reg_leaf"
         );
     }
 }

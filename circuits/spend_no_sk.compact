@@ -1,37 +1,15 @@
-// Server-side circuit: proves merkle membership + value commitment
-// WITHOUT the secret key. Takes (coinCom, nullifier) as public inputs
-// that were pre-verified via sk_prove.
+// RETIRED — kept as documentation only.
 //
-// The server never sees sk. It only knows (coinCom, nullifier) are
-// correct because it verified the client's sk_prove proof.
-
-import CompactStandardLibrary;
-
-ledger merkleTree: HistoricMerkleTree<32, Bytes<32>>;
-ledger nullifiers: Set<Bytes<32>>;
-ledger valueCom: JubjubPoint;
-ledger contractAddr: ContractAddress;
-ledger coinCommitment: Bytes<32>;
-ledger segment: Uint<16>;
-
-export circuit spend_no_sk(
-  coinCom: Bytes<32>,
-  nul: Bytes<32>,
-  path: MerkleTreePath<32, Bytes<32>>,
-  coin: ShieldedCoinInfo,
-  rc: Field
-): [] {
-  // Verify the coin commitment is in the merkle tree
-  merkleTree.checkRoot(disclose(merkleTreePathRootNoLeafHash<32>(path)));
-  assert(coinCom == path.leaf, "Path must be to coin commitment");
-  coinCommitment = disclose(coinCom);
-
-  // Insert nullifier (prevents double-spend)
-  nullifiers.insert(disclose(nul));
-
-  // Compute and disclose value commitment (Pedersen)
-  const colorBase = hashToCurve<[Bytes<32>, Uint<16>]>([coin.color, segment]);
-  const pedersenBlinding = ecMulGenerator(rc);
-  const pedersenCommit = ecMul(colorBase, coin.value);
-  valueCom = disclose(ecAdd(pedersenBlinding, pedersenCommit));
-}
+// This file was a stand-alone prototype of the server-side split spend
+// circuit, used during the v1/v2 design. The actual server circuit now
+// lives in the submodule at:
+//
+//   deps/midnight-ledger/zswap/zswap-split.compact
+//
+// See that file for the Solution A version (Phase 3 of the implementation
+// plan dropped the `publicKey` and `coinCommitment` per-spend disclosures
+// from the spend-split path). The compiled artifacts referenced by Rust
+// code are under `deps/midnight-ledger/zswap/static/spend-split.*`.
+//
+// We leave this stub in the tree to preserve the historical reference path
+// the docs and design notes link to. It is not compiled or used at runtime.
