@@ -742,6 +742,208 @@ mod tests {
             .expect("honest Solution A witness should satisfy sk_prove");
     }
 
+    // ─── Plan §Verification 2: tampering tests ──────────────────────────────
+    //
+    // Per the plan's Verification §2: confirm the per-spend circuit rejects
+    //   - wrong `salt` → rejected
+    //   - wrong `merkle_path` → rejected
+    //   - right path against wrong root → rejected
+    //   - honest path → accepted (covered by the previous test).
+    //
+    // Each tampering case uses an otherwise-honest witness, mutates one
+    // field, and asserts that `preimage.check(&ir)` rejects the result.
+
+    fn load_sk_prove_ir() -> midnight_zkir::IrSource {
+        midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(
+            std::io::Cursor::new(include_bytes!(
+                "../circuits/static/client-derivation/sk_prove.bzkir"
+            )),
+        )
+        .expect("client derivation IR should load")
+    }
+
+    #[test]
+    fn build_client_derivation_preimage_rejects_wrong_salt() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 250u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 7,
+        };
+        let r: Fr = OsRng.r#gen();
+        let registered_salt: Fr = OsRng.r#gen();
+        let reg_leaf =
+            crate::attestation::derive_reg_leaf_bytes(&sk, r, registered_salt);
+        let honest = RegistryWitness::for_first_registration(r, registered_salt, reg_leaf)
+            .expect("honest witness");
+
+        // Build the handoff against the honest root, then swap in a witness
+        // that uses a *different* salt. The preimage builder will reuse the
+        // honest merkle_path but with the attacker's salt — the in-circuit
+        // `regLeaf = transientHash(sep, C_sk, attacker_salt)` no longer
+        // matches the path leaf.
+        let handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            honest.registry_root_le_bytes(),
+        );
+        let attacker_salt: Fr = OsRng.r#gen();
+        assert_ne!(attacker_salt, registered_salt);
+        let bad_witness = RegistryWitness {
+            blinding: honest.blinding,
+            salt: attacker_salt,
+            merkle_path: honest.merkle_path.clone(),
+            registry_root: honest.registry_root,
+        };
+
+        let preimage = build_client_derivation_preimage(&sk, &bad_witness, &coin, &handoff)
+            .expect("preimage construction itself succeeds (the path/root match honestly)");
+        let ir = load_sk_prove_ir();
+        assert!(
+            preimage.check(&ir).is_err(),
+            "wrong salt must not satisfy sk_prove"
+        );
+    }
+
+    #[test]
+    fn build_client_derivation_preimage_rejects_wrong_merkle_path() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 250u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 7,
+        };
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let honest = RegistryWitness::for_first_registration(r, salt, reg_leaf)
+            .expect("honest witness");
+
+        // Build a *different* witness using an unrelated (sk', r', salt')
+        // and graft its merkle_path onto the honest record. The path's leaf
+        // is no longer the honest `upgradeFromTransient(reg_leaf)`, so
+        // `assert(upgradeFromTransient(regLeaf) == merkle_path.leaf)` fails.
+        let sk_other = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let r_other: Fr = OsRng.r#gen();
+        let salt_other: Fr = OsRng.r#gen();
+        let reg_leaf_other =
+            crate::attestation::derive_reg_leaf_bytes(&sk_other, r_other, salt_other);
+        let other = RegistryWitness::for_first_registration(r_other, salt_other, reg_leaf_other)
+            .expect("other witness");
+
+        let bad_witness = RegistryWitness {
+            blinding: honest.blinding,
+            salt: honest.salt,
+            // Path from a *different* leaf, with the corresponding root
+            // (otherwise the off-circuit cross-check fires first).
+            merkle_path: other.merkle_path.clone(),
+            registry_root: other.registry_root,
+        };
+        let handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            bad_witness.registry_root_le_bytes(),
+        );
+
+        let preimage = build_client_derivation_preimage(&sk, &bad_witness, &coin, &handoff)
+            .expect("preimage construction succeeds (the off-circuit root/path agree)");
+        let ir = load_sk_prove_ir();
+        assert!(
+            preimage.check(&ir).is_err(),
+            "merkle_path for a different leaf must not satisfy sk_prove"
+        );
+    }
+
+    #[test]
+    fn build_client_derivation_preimage_rejects_right_path_wrong_root() {
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 250u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 7,
+        };
+        let r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let honest = RegistryWitness::for_first_registration(r, salt, reg_leaf)
+            .expect("honest witness");
+
+        // Right path + wrong claimed root. `build_client_derivation_preimage`
+        // catches this off-circuit before building the IR witnesses.
+        let bad_witness = RegistryWitness {
+            blinding: honest.blinding,
+            salt: honest.salt,
+            merkle_path: honest.merkle_path.clone(),
+            registry_root: midnight_transient_crypto::merkle_tree::MerkleTreeDigest(
+                Fr::from(0xdead_beef_u64),
+            ),
+        };
+        // Stamp the *bad* root on the handoff too, so the handoff-vs-witness
+        // cross-check passes and we land on the path-vs-claimed-root one.
+        let handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            bad_witness.registry_root_le_bytes(),
+        );
+
+        let err = build_client_derivation_preimage(&sk, &bad_witness, &coin, &handoff)
+            .expect_err("right path against wrong root must fail preimage construction");
+        assert!(
+            err.contains("merkle_path resolves to") && err.contains("but registry_root is"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_client_derivation_preimage_rejects_wrong_blinding() {
+        // Bonus tampering test: a different blinding `r` means `C_sk` no
+        // longer matches the leaf hash, so `assert(upgradeFromTransient(
+        // transientHash(sep_reg, C_sk, salt)) == merkle_path.leaf)` fires
+        // in-circuit.
+        let sk = CoinSecretKey(OsRng.gen::<HashOutput>());
+        let coin = QualifiedCoinInfo {
+            value: 250u64.into(),
+            type_: Default::default(),
+            nonce: OsRng.r#gen(),
+            mt_index: 7,
+        };
+        let registered_r: Fr = OsRng.r#gen();
+        let salt: Fr = OsRng.r#gen();
+        let reg_leaf =
+            crate::attestation::derive_reg_leaf_bytes(&sk, registered_r, salt);
+        let honest = RegistryWitness::for_first_registration(registered_r, salt, reg_leaf)
+            .expect("honest witness");
+
+        let attacker_r: Fr = OsRng.r#gen();
+        assert_ne!(attacker_r, registered_r);
+        let bad_witness = RegistryWitness {
+            blinding: attacker_r,
+            salt: honest.salt,
+            merkle_path: honest.merkle_path.clone(),
+            registry_root: honest.registry_root,
+        };
+        let handoff = client_prepare_with_registry_root(
+            &sk,
+            &coin,
+            None,
+            honest.registry_root_le_bytes(),
+        );
+
+        let preimage = build_client_derivation_preimage(&sk, &bad_witness, &coin, &handoff)
+            .expect("preimage construction succeeds (off-circuit checks pass)");
+        let ir = load_sk_prove_ir();
+        assert!(
+            preimage.check(&ir).is_err(),
+            "wrong blinding r must not satisfy sk_prove"
+        );
+    }
+
     #[test]
     fn scalar_reduction_collision_does_not_reuse_registry_root() {
         // Solution A's spend-side soundness — a different 32-byte sk' that

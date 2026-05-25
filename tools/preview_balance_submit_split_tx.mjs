@@ -73,6 +73,11 @@ function parseArgs(argv) {
     submit: false,
     dryRun: false,
     proofServerUrl: process.env.MIDNIGHT_PROOF_SERVER_URL ?? process.env.MIDNIGHT_PREVIEW_PROOF_SERVER_URL ?? '',
+    // Solution A: registry-contract deploy / register helpers. See
+    // `tools/deploy_registry.sh` for the orchestration.
+    deployRegistry: false,
+    registerLeaf: '',
+    registryContractAddress: process.env.WALLET_REGISTRY_CONTRACT_ADDRESS ?? '',
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -82,8 +87,31 @@ function parseArgs(argv) {
     else if (arg === '--proof-server-url') args.proofServerUrl = argv[++i] ?? '';
     else if (arg === '--submit') args.submit = true;
     else if (arg === '--dry-run') args.dryRun = true;
+    else if (arg === '--deploy-registry') args.deployRegistry = true;
+    else if (arg === '--register-leaf') args.registerLeaf = argv[++i] ?? '';
+    else if (arg === '--registry-contract-address')
+      args.registryContractAddress = argv[++i] ?? '';
     else if (arg === '--help' || arg === '-h') {
-      process.stdout.write(`usage: preview_balance_submit_split_tx.mjs --tx-hex HEX [--key-index N] [--proof-server-url URL] [--dry-run] [--submit]\n`);
+      process.stdout.write(
+        [
+          'usage: preview_balance_submit_split_tx.mjs <mode>',
+          '',
+          'Split-spend submission mode:',
+          '  --tx-hex HEX [--key-index N] [--proof-server-url URL] [--dry-run] [--submit]',
+          '',
+          'Solution A registry helpers:',
+          '  --deploy-registry        Deploy the wallet_registry contract and print',
+          '                           `registry_contract_address=0x…` on stdout.',
+          '  --register-leaf HEX      Submit a register(leaf) call to the registry,',
+          '                           where HEX is the 32-byte reg_leaf to insert.',
+          '                           Requires --registry-contract-address.',
+          '  --registry-contract-address HEX',
+          '                           Override the deployed registry-contract address',
+          '                           (else read from WALLET_REGISTRY_CONTRACT_ADDRESS',
+          '                           or circuits/static/wallet-registry/contract_address.txt).',
+          '',
+        ].join('\n'),
+      );
       process.exit(0);
     } else {
       throw new Error(`unknown argument: ${arg}`);
@@ -94,6 +122,113 @@ function parseArgs(argv) {
     throw new Error('--key-index must be a non-negative integer');
   }
   return args;
+}
+
+const REGISTRY_STATIC_DIR = `${process.env.REGISTRY_STATIC_DIR ?? new URL('../circuits/static/wallet-registry/', import.meta.url).pathname}`;
+
+function registryArtifactPath(name) {
+  // Resolve to absolute path (REGISTRY_STATIC_DIR may already be absolute).
+  if (REGISTRY_STATIC_DIR.startsWith('/')) {
+    return REGISTRY_STATIC_DIR.endsWith('/')
+      ? `${REGISTRY_STATIC_DIR}${name}`
+      : `${REGISTRY_STATIC_DIR}/${name}`;
+  }
+  return new URL(name, `file://${process.cwd()}/${REGISTRY_STATIC_DIR}`).pathname;
+}
+
+/**
+ * Solution A: deploy the wallet_registry contract.
+ *
+ * The Compact-generated contract circuit and its prover/verifier keys live
+ * under `circuits/static/wallet-registry/`. This helper is intentionally
+ * minimal — it consumes a *manually-deployed* contract address via
+ * `MIDNIGHT_PREVIEW_REGISTRY_PREDEPLOYED_ADDRESS` (or `--registry-contract-address`)
+ * and writes it to the file the patched Rust admission code reads at boot
+ * (`circuits/static/wallet-registry/contract_address.txt`).
+ *
+ * Full deploy automation against a live node requires the
+ * `@midnight-ntwrk/*` Compact + Compose contract-deploy machinery, which is
+ * not in scope for this prototype script. Production deployments should
+ * either:
+ *   (a) deploy the contract via `compact compose-deploy` (or equivalent) and
+ *       then run `deploy_registry.sh --predeployed-address 0x…`, or
+ *   (b) extend this script to call the Compose deploy API in-process.
+ *
+ * Outputs:
+ *   `registry_contract_address=0x<64hex>`  on stdout (consumed by
+ *   `tools/deploy_registry.sh`'s `sed` parse).
+ */
+async function deployRegistry(args) {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+
+  let address =
+    args.registryContractAddress ||
+    process.env.MIDNIGHT_PREVIEW_REGISTRY_PREDEPLOYED_ADDRESS ||
+    '';
+  address = String(address).trim().replace(/^0x/i, '');
+  if (address.length !== 64 || !/^[0-9a-fA-F]+$/.test(address)) {
+    process.stderr.write(
+      [
+        '--deploy-registry: no usable contract address available.',
+        '',
+        'This helper does not (yet) drive a contract-deploy tx against a live',
+        'node — it expects you to deploy `circuits/wallet_registry.compact`',
+        'via your preferred Compact deploy path and then pass the resulting',
+        'contract address back. Set one of:',
+        '  • MIDNIGHT_PREVIEW_REGISTRY_PREDEPLOYED_ADDRESS=0x<64hex>',
+        '  • WALLET_REGISTRY_CONTRACT_ADDRESS=0x<64hex>',
+        '  • --registry-contract-address 0x<64hex>',
+        '',
+        'For the synthetic preview e2e (`make e2e`), the proof-server',
+        'installs a permissive registry-root checker that accepts any',
+        'root — no live deployment is required.',
+        '',
+      ].join('\n'),
+    );
+    process.exit(2);
+  }
+
+  const addressFile = registryArtifactPath('contract_address.txt');
+  await fs.mkdir(path.dirname(addressFile), { recursive: true });
+  await fs.writeFile(addressFile, `0x${address}\n`, 'utf8');
+  process.stdout.write(`registry_contract_address=0x${address}\n`);
+  process.stderr.write(`[deploy_registry] wrote ${addressFile}\n`);
+}
+
+/**
+ * Solution A: invoke `register(leaf)` on the deployed wallet_registry
+ * contract. Like `deployRegistry`, this is a documentation stub for the
+ * preview workflow — the actual contract-call tx submission requires the
+ * `@midnight-ntwrk/contracts` SDK and a real signer.
+ *
+ * If invoked, it prints the expected submit path and exits non-zero so the
+ * orchestrating shell knows registration didn't actually happen. The
+ * preview test uses an in-memory single-leaf registry tree instead, so this
+ * stub is only on the path for genuine live e2e (which is out of scope).
+ */
+async function registerLeaf(args) {
+  const leafHex = String(args.registerLeaf ?? '').trim().replace(/^0x/i, '');
+  if (leafHex.length !== 64 || !/^[0-9a-fA-F]+$/.test(leafHex)) {
+    throw new Error('--register-leaf must be a 32-byte hex string');
+  }
+  const address = (args.registryContractAddress || '').trim().replace(/^0x/i, '');
+  if (address.length !== 64) {
+    throw new Error(
+      'register-leaf requires --registry-contract-address 0x<64hex>',
+    );
+  }
+  process.stderr.write(
+    [
+      '--register-leaf is not yet wired against a live node.',
+      `Would call register(0x${leafHex}) on contract 0x${address}.`,
+      '',
+      'To complete the live e2e flow, extend this helper with a',
+      '`@midnight-ntwrk/contracts` contract-call submission.',
+      '',
+    ].join('\n'),
+  );
+  process.exit(3);
 }
 
 function siblingWalletNodeModulesUrl() {
@@ -482,6 +617,24 @@ async function submitWithWalletSdk(wallet, tx) {
 
 async function main() {
   const args = parseArgs(process.argv);
+
+  // Solution A registry helpers — short-circuit before pulling in the
+  // wallet/ledger SDK (which is heavy and pointless for a deploy command).
+  if (args.deployRegistry) {
+    await deployRegistry(args);
+    return;
+  }
+  if (args.registerLeaf) {
+    await registerLeaf(args);
+    return;
+  }
+
+  if (!args.txHex) {
+    throw new Error(
+      'split-spend submission requires --tx-hex; use --deploy-registry or --register-leaf for Solution A registry helpers.',
+    );
+  }
+
   const ledger = await importPackage('@midnight-ntwrk/ledger-v8', '@midnight-ntwrk/ledger-v8/midnight_ledger_wasm_fs.js');
   const tx = ledger.Transaction.deserialize('signature', 'proof', 'binding', fromHex(args.txHex));
   const networkId = envValue('MIDNIGHT_PREVIEW_NETWORK_ID', 'preview');
