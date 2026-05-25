@@ -64,8 +64,8 @@ rough sum above.)
 
 ## Confirmation against live e2e (2026-05-15)
 
-`make e2e` after wiring `preview_client.rs` to register a wallet attestation
-and attach it to every `/v2/prove-split-spend`:
+`make e2e` after wiring `local_poc_client.rs` to generate wallet attestation
+evidence and build the per-spend synthetic registry witness:
 
 | Stage | Time |
 |---|---:|

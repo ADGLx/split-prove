@@ -1,23 +1,34 @@
 import { HDWallet, Roles, validateMnemonic } from '@midnight-ntwrk/wallet-sdk-hd';
 import { mnemonicToSeedSync } from '@scure/bip39';
 
-const phrase = (process.env.MIDNIGHT_PREVIEW_RECOVERY_PHRASE ?? '').trim().replace(/\s+/g, ' ');
-const accountRaw = (process.env.MIDNIGHT_PREVIEW_ACCOUNT ?? '').trim();
-const indexRaw = (process.env.MIDNIGHT_PREVIEW_ZSWAP_KEY_INDEX ?? '').trim();
+function envValue(name, fallback = '') {
+  const value = process.env[name];
+  if (value && value.trim()) return value.trim();
+  if (name.startsWith('MIDNIGHT_LOCAL_')) {
+    const legacyName = `MIDNIGHT_PREVIEW_${name.slice('MIDNIGHT_LOCAL_'.length)}`;
+    const legacyValue = process.env[legacyName];
+    if (legacyValue && legacyValue.trim()) return legacyValue.trim();
+  }
+  return fallback;
+}
+
+const phrase = envValue('MIDNIGHT_LOCAL_RECOVERY_PHRASE').replace(/\s+/g, ' ');
+const accountRaw = envValue('MIDNIGHT_LOCAL_ACCOUNT');
+const indexRaw = envValue('MIDNIGHT_LOCAL_ZSWAP_KEY_INDEX');
 const account = Number.parseInt(accountRaw || '0', 10);
 const index = Number.parseInt(indexRaw || '0', 10);
 
 if (!phrase) {
-  throw new Error('MIDNIGHT_PREVIEW_RECOVERY_PHRASE is not set');
+  throw new Error('MIDNIGHT_LOCAL_RECOVERY_PHRASE is not set');
 }
 if (!validateMnemonic(phrase)) {
-  throw new Error('MIDNIGHT_PREVIEW_RECOVERY_PHRASE is not a valid English BIP39 mnemonic');
+  throw new Error('MIDNIGHT_LOCAL_RECOVERY_PHRASE is not a valid English BIP39 mnemonic');
 }
 if (!Number.isSafeInteger(account) || account < 0) {
-  throw new Error('MIDNIGHT_PREVIEW_ACCOUNT must be a non-negative integer');
+  throw new Error('MIDNIGHT_LOCAL_ACCOUNT must be a non-negative integer');
 }
 if (!Number.isSafeInteger(index) || index < 0) {
-  throw new Error('MIDNIGHT_PREVIEW_ZSWAP_KEY_INDEX must be a non-negative integer');
+  throw new Error('MIDNIGHT_LOCAL_ZSWAP_KEY_INDEX must be a non-negative integer');
 }
 
 const seed = mnemonicToSeedSync(phrase);

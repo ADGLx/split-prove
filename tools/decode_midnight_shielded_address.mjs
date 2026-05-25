@@ -7,8 +7,8 @@ function localDevNodeModulesUrl() {
 }
 
 function siblingWalletNodeModulesUrl() {
-  if (process.env.MIDNIGHT_PREVIEW_WALLET_NODE_MODULES) {
-    const value = process.env.MIDNIGHT_PREVIEW_WALLET_NODE_MODULES;
+  const value = envValue('MIDNIGHT_LOCAL_WALLET_NODE_MODULES');
+  if (value) {
     const suffix = value.endsWith('/') ? value : `${value}/`;
     return pathToFileURL(suffix).href;
   }
@@ -26,9 +26,20 @@ async function importPackage(name, fallbackPath) {
       }
     }
     throw new Error(
-      `unable to import ${name}; install it locally or set MIDNIGHT_PREVIEW_WALLET_NODE_MODULES. Original error: ${directError.message}`,
+      `unable to import ${name}; install it locally or set MIDNIGHT_LOCAL_WALLET_NODE_MODULES. Original error: ${directError.message}`,
     );
   }
+}
+
+function envValue(name, fallback = '') {
+  const value = process.env[name];
+  if (value && value.trim()) return value.trim();
+  if (name.startsWith('MIDNIGHT_LOCAL_')) {
+    const legacyName = `MIDNIGHT_PREVIEW_${name.slice('MIDNIGHT_LOCAL_'.length)}`;
+    const legacyValue = process.env[legacyName];
+    if (legacyValue && legacyValue.trim()) return legacyValue.trim();
+  }
+  return fallback;
 }
 
 function argValue(name, fallback = '') {
@@ -38,8 +49,8 @@ function argValue(name, fallback = '') {
 }
 
 async function main() {
-  const address = argValue('--address', process.env.MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS ?? '').trim();
-  const networkId = argValue('--network-id', process.env.MIDNIGHT_PREVIEW_NETWORK_ID ?? 'preview').trim();
+  const address = argValue('--address', envValue('MIDNIGHT_LOCAL_RECIPIENT_SHIELDED_ADDRESS')).trim();
+  const networkId = argValue('--network-id', envValue('MIDNIGHT_LOCAL_NETWORK_ID', 'undeployed')).trim();
   if (!address) {
     throw new Error('recipient shielded address is required');
   }

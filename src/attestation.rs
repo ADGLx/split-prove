@@ -8,17 +8,16 @@
 //!   4. Runs the attestation circuit (this file's `register_wallet`) to
 //!      sanity-check the derivation against the canonical Zswap `pk = H(sk)`
 //!      witness binding.
-//!   5. Submits a contract tx calling `register(reg_leaf)` on the registry
-//!      contract.
-//!   6. After the registration tx is finalized, persists locally:
+//!   5. Builds a synthetic first-registration witness for the local POC.
+//!   6. Persists locally:
 //!         `WalletRegistration { r, salt, mt_index, leaf, merkle_path }`
-//!      The `merkle_path` is fetched from the contract state once the leaf
-//!      has been included.
+//!      The `merkle_path` is generated client-side for local proving.
 //!
 //! Per-spend, the wallet feeds `(r, salt, merkle_path)` to the client circuit
 //! (see `src/client.rs`). The per-spend proof opens `reg_leaf` to a
 //! Merkle-path member; the admission verifier checks the resulting
-//! `registry_root` against the contract's `HistoricMerkleTree` root history.
+//! `registry_root` through the host-installed registry-root checker. The local
+//! proof-server/node/indexer binaries install a permissive checker.
 //!
 //! Public outputs of the *attestation* circuit shrink to a single
 //! `reg_leaf` field — `pk` and `C_sk` are no longer disclosed. The chain of
@@ -196,9 +195,8 @@ where
 /// `Bytes<32>` — same shared bit witnesses as the in-circuit gadget.
 ///
 /// `reg_leaf_fr = transientHash(sep_reg, C_sk, salt)` (the in-circuit `regLeaf`
-/// field). The wallet submits `upgrade_from_transient(reg_leaf_fr)` to the
-/// registry contract — that 32-byte form is what `WalletRegistration::
-/// reg_leaf_bytes` exposes.
+/// field). `upgrade_from_transient(reg_leaf_fr)` is the 32-byte registry-leaf
+/// form exposed by `WalletRegistration::reg_leaf_bytes`.
 pub fn derive_reg_leaf(sk: &CoinSecretKey, r: Fr, salt: Fr) -> (Fr, Fr) {
     let mut sk_limbs = Vec::new();
     sk.0 .0.field_repr(&mut sk_limbs);
@@ -212,8 +210,7 @@ pub fn derive_reg_leaf(sk: &CoinSecretKey, r: Fr, salt: Fr) -> (Fr, Fr) {
     (c_sk_fr, reg_leaf_fr)
 }
 
-/// Convenience: return the upgraded 32-byte form ready to submit to the
-/// registry contract.
+/// Convenience: return the upgraded 32-byte registry-leaf form.
 pub fn derive_reg_leaf_bytes(sk: &CoinSecretKey, r: Fr, salt: Fr) -> [u8; 32] {
     let (_, reg_leaf_fr) = derive_reg_leaf(sk, r, salt);
     upgrade_from_transient(reg_leaf_fr).0
@@ -230,13 +227,12 @@ fn ascii_to_fr_le(s: &str) -> Fr {
 /// Generate a fresh wallet registration. Run **once** at wallet setup. The
 /// returned `WalletRegistration` carries the secrets `(r, salt)`, which must
 /// be persisted on the wallet (and never leave it), plus the `reg_leaf` byte
-/// representation the wallet will submit to the registry contract via a
-/// `register(reg_leaf)` contract call.
+/// representation used by the synthetic local POC registry witness.
 ///
 /// The attestation proof attached to the result is kept locally on the wallet
 /// as evidence that `reg_leaf` was correctly derived from `(sk, r, salt)`. In
-/// Solution A this proof is *not* submitted on-chain (the contract's permissioning
-/// argument makes it unnecessary — see `circuits/wallet_registry.compact`).
+/// Solution A this proof is not submitted with every spend; the local POC keeps
+/// it client-side and uses a synthetic first-registration witness.
 pub async fn register_wallet(
     sk: &CoinSecretKey,
     resolver: impl ParamsProverProvider + Resolver,

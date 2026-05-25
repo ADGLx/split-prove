@@ -6,19 +6,19 @@ Split-Prove divides a zswap spend into wallet-local proof work and server proof 
 
 ### Wallet setup
 
-The wallet generates `pi_attest` once per key. It proves:
+The wallet can generate `pi_attest` once per key as first-registration evidence. It proves:
 
 - the wallet knows `sk`;
-- `pk` was derived from that `sk`;
-- `C_sk` commits to the same `sk` using wallet-only randomness `r`.
+- `C_sk` commits to that `sk` using wallet-only randomness `r`;
+- `reg_leaf` commits to `C_sk` with a wallet-only `salt`.
 
-This moves the expensive `pk = H(sk)` relation out of the per-spend client proof.
+In the local-node POC this evidence is kept wallet-side; the client builds a synthetic first-registration Merkle witness instead of deploying a registry contract.
 
 ### Per spend, client side
 
 The wallet generates `pi_sk` for each spend. It proves:
 
-- the wallet knows the same `sk` committed in `C_sk`;
+- the wallet knows an `sk` whose `reg_leaf` is in the registry tree rooted at `registryRoot`;
 - the canonical zswap nullifier was derived from that `sk` and the coin;
 - the coin-binding tag was derived from the coin and `pk`.
 
@@ -33,25 +33,20 @@ The proof server generates `pi_spend`. It proves:
 - the declared nullifier is inserted;
 - the value commitment and spend rules are valid.
 
-The server receives public values, coin metadata, Merkle data, and proofs. It does not receive `sk` or the attestation blinding value `r`.
+The server receives public values, coin metadata, Merkle data, and proofs. It does not receive `sk`, `r`, `salt`, or the registry Merkle path.
 
 ### Transaction submission
 
-The patched node verifies `pi_attest`, `pi_sk`, and `pi_spend`. It also checks that the shared public values match across the proofs:
+The patched node verifies the v4 split bundle: `pi_sk`, `pi_spend`, and the shared public inputs:
 
-- `pk`;
-- `C_sk`;
-- `nullifier`;
 - `coinBindingTag`;
-- `coinCommitment`.
+- `registryRoot`.
 
-The transaction is accepted only if all proofs verify and all shared values agree.
+The transaction is accepted only if both proofs verify and the host-installed registry-root checker accepts `registryRoot`. The local proof-server/node/indexer install a permissive checker for the POC.
 
 ## Why The Wallet Proof Is Smaller
 
-The client does less repeated work because `C_sk` is opened with a cheap Poseidon/transient-hash relation instead of recomputing the expensive `pk = H(sk)` SHA-256 relation on every spend.
-
-The expensive `pk = H(sk)` proof is paid once in the wallet attestation. Each spend only proves that the same committed `sk` is used to derive the nullifier and coin-binding tag.
+The client does less repeated work because the per-spend proof uses Poseidon/transient-hash relations for the registration leaf and Merkle path rather than recomputing expensive persistent-hash relations wherever possible.
 
 The current proof-side design commits to an injective limb encoding of the 32-byte secret key instead of treating `sk` as one field/scalar. That avoids scalar-reduction ambiguity.
 
@@ -61,17 +56,17 @@ The current proof-side design commits to an injective limb encoding of the 32-by
 
 Yes. The client proof derives the canonical zswap nullifier, so a stock spend and a split spend of the same coin collide in the same nullifier set.
 
-### What prevents the server from changing `pk`, `nullifier`, or coin-binding data?
+### What prevents the server from changing wallet or coin-binding data?
 
-The ledger verifies shared public inputs across the proofs. Tampering with `pk`, `nullifier`, `coinBindingTag`, or `C_sk` breaks verification.
+The ledger verifies `pi_sk` against `nullifier`, `coinBindingTag`, and `registryRoot`, and verifies the server proof against the same split public inputs. Tampering with those values breaks verification.
 
 ### Why add a wallet attestation proof?
 
-It avoids recomputing `pk = H(sk)` inside every per-spend client proof while still binding the wallet key to the per-spend proof.
+It provides first-registration evidence for the wallet's registry leaf. In the local POC the proof is generated and retained off-chain while the split bundle carries only the per-spend client proof and registry root.
 
 ### Is the wallet attestation reusable?
 
-Yes. It is intended as a one-time-per-wallet or one-time-per-key proof. The per-spend proof opens the same `C_sk`.
+Yes. It is intended as a one-time-per-wallet or one-time-per-key proof. The per-spend proof proves membership of the resulting `reg_leaf`.
 
 ### Why use Poseidon for `C_sk`?
 
@@ -79,15 +74,15 @@ It was much cheaper in Compact than the Pedersen commitment option while still g
 
 ### Does the server ever receive the raw `sk`?
 
-No. The server receives public values and proofs, but not the secret key or attestation blinding value.
+No. The server receives public values and proofs, but not the secret key, attestation blinding value, salt, or registry Merkle path.
 
 ### Why does this require a patched ledger?
 
-Stock nodes do not know how to decode or verify the split proof bundle, wallet attestation proof, or client derivation proof.
+Stock nodes do not know how to decode or verify the v4 split proof bundle or client derivation proof.
 
 ### Is this recursive proof aggregation?
 
-No. The current approach verifies multiple proofs directly in ledger admission logic instead of recursively aggregating them into one proof.
+No. The current approach verifies the client and server proofs directly in ledger admission logic instead of recursively aggregating them into one proof.
 
 ### What is the main compatibility tradeoff?
 
@@ -101,6 +96,6 @@ The outer zswap wire format stays mostly compatible, but nodes and indexers must
 - Using `skCommitment` as a placeholder witness in the server split circuit. It pinned almost nothing by itself, so the design shifted to explicit shared public inputs: `pk`, `nullifier`, `coinBindingTag`, and later `C_sk`.
 - Using a split-only Poseidon nullifier. It improved client proof cost, but broke stock-vs-split double-spend semantics because normal wallet spends use the canonical zswap nullifier. The fix was to make split spends prove the canonical wallet nullifier.
 - Recomputing `pk = H_persistent(sk)` inside every per-spend client proof. This was sound but too expensive; the client proof became almost as heavy as the server proof. It was replaced by a one-time wallet attestation plus a cheaper per-spend opening.
-- A v2 split bundle without wallet attestation. It could verify per-spend derivation, but did not cheaply bind the per-spend `sk` back to the canonical `pk = H(sk)` without paying that hash every spend. The v3 bundle adds `attestation_proof`.
+- A v2 split bundle without wallet attestation. It could verify per-spend derivation, but did not cheaply bind the per-spend `sk` back to the canonical `pk = H(sk)` without paying that hash every spend. The v3 bundle added `attestation_proof`; v4 replaced the on-chain attestation fields with `registryRoot`.
 - A Pedersen-style `C_sk` commitment. It was considered for the wallet attestation link, but was much more expensive than the Poseidon/transient-hash commitment in Compact, so the PoC moved to Poseidon `C_sk`.
 - Treating `sk` as a single field/scalar for commitment. That risks scalar-reduction ambiguity, so the final proof-side design uses an injective limb encoding of the 32-byte secret before committing and checking it.

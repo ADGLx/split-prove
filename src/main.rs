@@ -8,8 +8,8 @@
 //!
 //! Solution A change vs. v3: the wallet's `(pk, C_sk)` are no longer
 //! disclosed on chain. The only wallet-identifying public value the server
-//! emits is `registry_root`, the root of the registry contract's
-//! `HistoricMerkleTree` at the time of the spend.
+//! emits is `registry_root`; local POC binaries accept it through a
+//! permissive host-installed registry-root checker.
 
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::{
@@ -138,7 +138,10 @@ fn main() {
     println!("  Time:            {:?}", client_time);
     println!("  nullifier:       {}", hex::encode(handoff.nullifier.0 .0));
     println!("  coin_binding:    {:?}", handoff.coin_binding_tag);
-    println!("  registry_root:   {:?} (demo stub: zero)", handoff.registry_root);
+    println!(
+        "  registry_root:   {:?} (demo stub: zero)",
+        handoff.registry_root
+    );
 
     let mut sk_fields = Vec::new();
     sk.field_repr(&mut sk_fields);
@@ -201,18 +204,10 @@ fn main() {
     );
     println!("  Server would then:  prove() → ~960 ms (Solution A's +20-Poseidon membership)");
 
-    println!("\n=== Remaining production work (out of scope for this demo binary) ===");
-    println!("  - The proof-server installs a *permissive* registry-root checker");
-    println!("    at boot (see `install_registry_root_checker_for_demo`). A");
-    println!("    production deployment must replace it with one that resolves");
-    println!("    the deployed registry contract's `HistoricMerkleTree<20>` from");
-    println!("    the live `LedgerState` and only admits roots in its history.");
-    println!("  - The node's admission path needs the same hook wired up at");
-    println!("    startup (`deps/midnight-node`). For the live preview e2e in");
-    println!("    `cargo make e2e` the proof-server's permissive checker is");
-    println!("    sufficient.");
-    println!("  - `tools/deploy_registry.sh --deploy-registry` flag on");
-    println!("    `preview_balance_submit_split_tx.mjs` still needs to be");
-    println!("    implemented to submit the registry-contract deploy + register");
-    println!("    contract calls against a live node.");
+    println!("\n=== Local-node POC assumptions ===");
+    println!("  - The proof-server, node, and indexer install a permissive");
+    println!("    registry-root checker at startup for the local POC.");
+    println!("  - The wallet-side client generates a synthetic first-registration");
+    println!("    registry witness; no registry contract is deployed or called.");
+    println!("  - Transaction submission is raw RPC to the local undeployed node.");
 }

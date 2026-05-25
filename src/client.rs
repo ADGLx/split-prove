@@ -47,28 +47,26 @@ pub const REGISTRY_TREE_HEIGHT: u8 = 20;
 
 /// Compute the merkle root from a `(leaf_hash, path)` pair *without* applying
 /// any further leaf hash. This is the off-circuit equivalent of Compact's
-/// `merkleTreePathRootNoLeafHash<H>(path)` and matches the registry
-/// contract's `tree.insertHash(leaf_bytes)` semantics (no extra hash).
+/// `merkleTreePathRootNoLeafHash<H>(path)` and matches the registry reference
+/// circuit's no-extra-leaf-hash semantics.
 ///
 /// Copy of `raw_leaf_hash_root` from
 /// `deps/midnight-ledger/zswap/src/construct.rs` — same logic but reproduced
 /// here so the split-prove client doesn't have to depend on zswap's
 /// internal helpers.
-pub fn raw_leaf_hash_root<T>(
-    leaf_hash: HashOutput,
-    path: &MerklePath<T>,
-) -> MerkleTreeDigest {
+pub fn raw_leaf_hash_root<T>(leaf_hash: HashOutput, path: &MerklePath<T>) -> MerkleTreeDigest {
     use midnight_transient_crypto::hash::{degrade_to_transient, transient_hash};
-    MerkleTreeDigest(path.path.iter().fold(
-        degrade_to_transient(leaf_hash),
-        |acc, entry| {
-            if entry.goes_left {
-                transient_hash(&[acc, entry.sibling.0])
-            } else {
-                transient_hash(&[entry.sibling.0, acc])
-            }
-        },
-    ))
+    MerkleTreeDigest(
+        path.path
+            .iter()
+            .fold(degrade_to_transient(leaf_hash), |acc, entry| {
+                if entry.goes_left {
+                    transient_hash(&[acc, entry.sibling.0])
+                } else {
+                    transient_hash(&[entry.sibling.0, acc])
+                }
+            }),
+    )
 }
 
 /// Data the client sends to the server for split proving.
@@ -192,19 +190,15 @@ pub struct RegistryWitness {
 
 impl RegistryWitness {
     /// Construct a witness for a fresh registration: builds a height-20 path
-    /// containing only `reg_leaf` at index 0, exactly what the registry
-    /// contract's `HistoricMerkleTree<20, Bytes<32>>` looks like right after
-    /// the very first `register(leaf)` call.
+    /// containing only `reg_leaf` at index 0. This is the local POC's
+    /// synthetic first-registration witness.
     ///
-    /// The registry contract calls `tree.insertHash(leaf)` (NOT `insert`),
-    /// so the leaf bytes go in directly with no leaf-hash step. We mirror
-    /// that off-circuit: the in-memory tree stores the upgrade bytes as
-    /// the leaf-level hash, and the path verifier uses `NoLeafHash` to
-    /// match.
+    /// The leaf bytes go in directly with no leaf-hash step. We mirror that
+    /// off-circuit: the in-memory tree stores the upgrade bytes as the
+    /// leaf-level hash, and the path verifier uses `NoLeafHash` to match.
     ///
-    /// Production wallets should instead fetch the live path via
-    /// `refresh_registry_path`; this constructor is the unit-test / e2e
-    /// equivalent of doing the contract read in-process.
+    /// A production registry design would replace this with a live path
+    /// refresh. The current POC intentionally keeps the witness client-side.
     pub fn for_first_registration(
         blinding: Fr,
         salt: Fr,
@@ -222,8 +216,7 @@ impl RegistryWitness {
         // Compute the root the "NoLeafHash" way — that's what the
         // sk_proof.compact circuit uses (`merkleTreePathRootNoLeafHash`).
         // `MerklePath::root()` would re-hash the leaf, which is wrong here.
-        let registry_root =
-            raw_leaf_hash_root(leaf_hash, &merkle_path);
+        let registry_root = raw_leaf_hash_root(leaf_hash, &merkle_path);
         Ok(Self {
             blinding,
             salt,
@@ -320,9 +313,8 @@ pub fn client_prepare_with_registry_root(
 /// path. The wallet calls this on every spend.
 ///
 /// The caller is responsible for supplying a `RegistryWitness` whose
-/// `merkle_path` is still aligned with a contract root in the registry's
-/// `HistoricMerkleTree` history. See `refresh_registry_path` for the
-/// suggested helper.
+/// `merkle_path` resolves to the stamped `registry_root`; local POC
+/// admission accepts that root through a permissive host checker.
 pub fn client_prepare_with_registry(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
@@ -539,9 +531,11 @@ pub async fn refresh_registry_path(
     _registry_contract_address: ContractAddress,
     _registration: &WalletRegistration,
 ) -> Result<RegistryWitness, String> {
-    Err("refresh_registry_path: implement against the indexer/contract-state \
+    Err(
+        "refresh_registry_path: implement against the indexer/contract-state \
          API in tools/; see comments in src/client.rs for the wire format"
-        .to_string())
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -685,17 +679,12 @@ mod tests {
         };
         let r: Fr = OsRng.r#gen();
         let salt: Fr = OsRng.r#gen();
-        let reg_leaf =
-            crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
         let witness = RegistryWitness::for_first_registration(r, salt, reg_leaf)
             .expect("first-registration witness");
         // Stamp a *wrong* registry_root on the handoff so the cross-check fires.
-        let mut handoff = client_prepare_with_registry_root(
-            &sk,
-            &coin,
-            None,
-            witness.registry_root_le_bytes(),
-        );
+        let mut handoff =
+            client_prepare_with_registry_root(&sk, &coin, None, witness.registry_root_le_bytes());
         handoff.registry_root = [9u8; 32];
 
         let err = build_client_derivation_preimage(&sk, &witness, &coin, &handoff)
@@ -717,16 +706,11 @@ mod tests {
         };
         let r: Fr = OsRng.r#gen();
         let salt: Fr = OsRng.r#gen();
-        let reg_leaf =
-            crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
         let witness = RegistryWitness::for_first_registration(r, salt, reg_leaf)
             .expect("first-registration witness");
-        let handoff = client_prepare_with_registry_root(
-            &sk,
-            &coin,
-            None,
-            witness.registry_root_le_bytes(),
-        );
+        let handoff =
+            client_prepare_with_registry_root(&sk, &coin, None, witness.registry_root_le_bytes());
 
         let preimage = build_client_derivation_preimage(&sk, &witness, &coin, &handoff)
             .expect("valid witness should build preimage");
@@ -754,11 +738,9 @@ mod tests {
     // field, and asserts that `preimage.check(&ir)` rejects the result.
 
     fn load_sk_prove_ir() -> midnight_zkir::IrSource {
-        midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(
-            std::io::Cursor::new(include_bytes!(
-                "../circuits/static/client-derivation/sk_prove.bzkir"
-            )),
-        )
+        midnight_serialize::tagged_deserialize::<midnight_zkir::IrSource>(std::io::Cursor::new(
+            include_bytes!("../circuits/static/client-derivation/sk_prove.bzkir"),
+        ))
         .expect("client derivation IR should load")
     }
 
@@ -773,8 +755,7 @@ mod tests {
         };
         let r: Fr = OsRng.r#gen();
         let registered_salt: Fr = OsRng.r#gen();
-        let reg_leaf =
-            crate::attestation::derive_reg_leaf_bytes(&sk, r, registered_salt);
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, registered_salt);
         let honest = RegistryWitness::for_first_registration(r, registered_salt, reg_leaf)
             .expect("honest witness");
 
@@ -783,12 +764,8 @@ mod tests {
         // honest merkle_path but with the attacker's salt — the in-circuit
         // `regLeaf = transientHash(sep, C_sk, attacker_salt)` no longer
         // matches the path leaf.
-        let handoff = client_prepare_with_registry_root(
-            &sk,
-            &coin,
-            None,
-            honest.registry_root_le_bytes(),
-        );
+        let handoff =
+            client_prepare_with_registry_root(&sk, &coin, None, honest.registry_root_le_bytes());
         let attacker_salt: Fr = OsRng.r#gen();
         assert_ne!(attacker_salt, registered_salt);
         let bad_witness = RegistryWitness {
@@ -819,8 +796,8 @@ mod tests {
         let r: Fr = OsRng.r#gen();
         let salt: Fr = OsRng.r#gen();
         let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
-        let honest = RegistryWitness::for_first_registration(r, salt, reg_leaf)
-            .expect("honest witness");
+        let honest =
+            RegistryWitness::for_first_registration(r, salt, reg_leaf).expect("honest witness");
 
         // Build a *different* witness using an unrelated (sk', r', salt')
         // and graft its merkle_path onto the honest record. The path's leaf
@@ -870,8 +847,8 @@ mod tests {
         let r: Fr = OsRng.r#gen();
         let salt: Fr = OsRng.r#gen();
         let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, r, salt);
-        let honest = RegistryWitness::for_first_registration(r, salt, reg_leaf)
-            .expect("honest witness");
+        let honest =
+            RegistryWitness::for_first_registration(r, salt, reg_leaf).expect("honest witness");
 
         // Right path + wrong claimed root. `build_client_derivation_preimage`
         // catches this off-circuit before building the IR witnesses.
@@ -879,9 +856,9 @@ mod tests {
             blinding: honest.blinding,
             salt: honest.salt,
             merkle_path: honest.merkle_path.clone(),
-            registry_root: midnight_transient_crypto::merkle_tree::MerkleTreeDigest(
-                Fr::from(0xdead_beef_u64),
-            ),
+            registry_root: midnight_transient_crypto::merkle_tree::MerkleTreeDigest(Fr::from(
+                0xdead_beef_u64,
+            )),
         };
         // Stamp the *bad* root on the handoff too, so the handoff-vs-witness
         // cross-check passes and we land on the path-vs-claimed-root one.
@@ -915,8 +892,7 @@ mod tests {
         };
         let registered_r: Fr = OsRng.r#gen();
         let salt: Fr = OsRng.r#gen();
-        let reg_leaf =
-            crate::attestation::derive_reg_leaf_bytes(&sk, registered_r, salt);
+        let reg_leaf = crate::attestation::derive_reg_leaf_bytes(&sk, registered_r, salt);
         let honest = RegistryWitness::for_first_registration(registered_r, salt, reg_leaf)
             .expect("honest witness");
 
@@ -928,12 +904,8 @@ mod tests {
             merkle_path: honest.merkle_path.clone(),
             registry_root: honest.registry_root,
         };
-        let handoff = client_prepare_with_registry_root(
-            &sk,
-            &coin,
-            None,
-            honest.registry_root_le_bytes(),
-        );
+        let handoff =
+            client_prepare_with_registry_root(&sk, &coin, None, honest.registry_root_le_bytes());
 
         let preimage = build_client_derivation_preimage(&sk, &bad_witness, &coin, &handoff)
             .expect("preimage construction succeeds (off-circuit checks pass)");

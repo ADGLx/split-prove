@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Independent on-chain verifier for the preview split-send e2e.
+// Independent on-chain verifier for the local split-send e2e.
 //
 // Reads back the block produced by submission via a fresh WS connection to the
 // node, then asserts:
@@ -16,7 +16,13 @@ const DEFAULT_NODE_URL = 'ws://127.0.0.1:9944';
 
 function envValue(name, fallback = '') {
   const value = process.env[name];
-  return value && value.trim() ? value.trim() : fallback;
+  if (value && value.trim()) return value.trim();
+  if (name.startsWith('MIDNIGHT_LOCAL_')) {
+    const legacyName = `MIDNIGHT_PREVIEW_${name.slice('MIDNIGHT_LOCAL_'.length)}`;
+    const legacyValue = process.env[legacyName];
+    if (legacyValue && legacyValue.trim()) return legacyValue.trim();
+  }
+  return fallback;
 }
 
 function parseArgs(argv) {
@@ -37,11 +43,10 @@ function normHex(value) {
   return String(value ?? '').trim().replace(/^0x/i, '').toLowerCase();
 }
 
-function assertNodeUrlAllowed(nodeUrl) {
+function assertLocalWsUrl(name, nodeUrl) {
   const parsed = new URL(nodeUrl);
-  const isLocalhost = isLocalStackUrl(parsed);
-  if (parsed.protocol !== 'wss:' && !(isLocalhost && parsed.protocol === 'ws:')) {
-    throw new Error('MIDNIGHT_PREVIEW_NODE_WS must use wss:// for non-localhost networks');
+  if (!isLocalStackUrl(parsed) || parsed.protocol !== 'ws:') {
+    throw new Error(`${name} must point at a local ws:// endpoint`);
   }
 }
 
@@ -50,21 +55,6 @@ function isLocalStackUrl(parsedUrl) {
     || parsedUrl.hostname === '127.0.0.1'
     || parsedUrl.hostname === '[::1]'
     || parsedUrl.hostname === '::1';
-}
-
-function allowRemotePatchedStack() {
-  return ['1', 'true', 'yes'].includes(
-    envValue('MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK', '').trim().toLowerCase(),
-  );
-}
-
-function assertPatchedStackUrlAllowed(name, value) {
-  const parsed = new URL(value);
-  if (!isLocalStackUrl(parsed) && !allowRemotePatchedStack()) {
-    throw new Error(
-      `${name} must point at the rebuilt local split-prove stack. Set MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK=1 only for a known patched node/indexer pair.`,
-    );
-  }
 }
 
 function rpcClient(nodeUrl, timeoutMs) {
@@ -126,10 +116,9 @@ function rpcClient(nodeUrl, timeoutMs) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  const nodeUrl = envValue('MIDNIGHT_PREVIEW_NODE_WS', DEFAULT_NODE_URL);
-  assertPatchedStackUrlAllowed('MIDNIGHT_PREVIEW_NODE_WS', nodeUrl);
-  assertNodeUrlAllowed(nodeUrl);
-  const timeoutMs = Number.parseInt(envValue('MIDNIGHT_PREVIEW_VERIFY_TIMEOUT_SECS', '60'), 10) * 1000;
+  const nodeUrl = envValue('MIDNIGHT_LOCAL_NODE_WS', DEFAULT_NODE_URL);
+  assertLocalWsUrl('MIDNIGHT_LOCAL_NODE_WS', nodeUrl);
+  const timeoutMs = Number.parseInt(envValue('MIDNIGHT_LOCAL_VERIFY_TIMEOUT_SECS', '60'), 10) * 1000;
   const callTimeoutMs = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000;
 
   const blockHash = args.blockHash.startsWith('0x') ? args.blockHash : `0x${args.blockHash}`;

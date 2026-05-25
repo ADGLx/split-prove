@@ -15,38 +15,39 @@ The wallet already knows how to derive keys, sync/index chain data, decrypt owne
 wallet/client
   existing wallet work:
     derive zswap key
-    fetch preview/indexer data
+    fetch local indexer data
     decrypt owned shielded outputs
     filter spent outputs
     build Merkle state/path
 
   split-prove handoff:
-    generate/reuse wallet attestation proof
-    prove sk -> nullifier/coinBindingTag/commitmentSk
+    generate wallet attestation evidence and synthetic first-registration witness
+    prove sk -> nullifier/coinBindingTag/registryRoot
     compute nullifier
     read selected output commitmentHash
-    package coin metadata + Merkle state/path
+    package coin metadata + Merkle state/path + registryRoot
     POST /v2/prove-split-spend
 
 proof server
-  pre-verify wallet attestation and client derivation proofs
+  pre-verify client derivation proof
   reconstruct QualifiedCoinInfo
   recompute commitmentHash = H(coin, pk) and reject mismatches
   load Merkle tree/path
   reject handoffs whose commitment does not reproduce the tree root
-  prove coinCommitment, Merkle membership, nullifier insertion, coinBindingTag, and value commitment
+  prove Merkle membership, nullifier insertion, coinBindingTag, registryRoot, and value commitment
   call Input::new_split
   prove midnight/zswap/spend-split
   return proofHex + provedInputHex
 
 local chain
-  verify attestation, client-derivation, and spend-split proofs in node admission
+  verify client-derivation and spend-split proofs in node admission
+  accept registryRoot through the local permissive checker
   read through the indexer
-  Dust-balance and submit through the wallet SDK/raw RPC bridge
+  Dust-balance with the wallet SDK and submit through raw RPC
 ```
 
 The live e2e always spends the selected local-chain shielded output and creates
-a shielded output for `MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`. The token
+a shielded output for `MIDNIGHT_LOCAL_RECIPIENT_SHIELDED_ADDRESS`. The token
 movement is full split-send only: client derivation proof -> server split proof
 -> split transaction assembly -> wallet SDK Dust balancing -> submission.
 
@@ -60,18 +61,18 @@ The wallet-side per-spend client-derivation circuit is intentionally smaller tha
 | `wallet_attest` / wallet attestation | 2.82 MB | one time per `sk`, wallet-local |
 | `spend-split` / server split spend | 5.74 MB | per spend, proof server |
 
-The wallet attestation proves `pk = H_persistent(sk)` and `commitmentSk = H_transient(sk, r)` once. The per-spend client proof opens that same `commitmentSk`, proves the canonical `nullifier = H_persistent(coin, sk)`, and discloses `coinBindingTag = H_transient(domain, coin, pk)`. The server split proof computes the canonical `coinCommitment = H_persistent(coin, pk)`, checks the Merkle leaf, inserts the public nullifier, discloses the same `coinBindingTag`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+The wallet attestation evidence derives `reg_leaf = H(C_sk, salt)` once for the local POC. The per-spend client proof proves the canonical `nullifier = H_persistent(coin, sk)`, discloses `coinBindingTag = H_transient(domain, coin, pk)`, and proves the synthetic registry membership path resolves to `registryRoot`. The server split proof computes the canonical coin commitment internally, checks the Merkle leaf, inserts the public nullifier, carries the same `coinBindingTag` and `registryRoot`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
 
 ## Important Files
 
 - `deps/midnight-ledger/proof-server/src/endpoints.rs`: `POST /v2/prove-split-spend`.
-- `deps/midnight-ledger/proof-server/src/preview_client.rs`: local CLI helper that simulates wallet-side preview work and handoff creation.
-- `deps/midnight-ledger/proof-server/src/bin/preview_split_prove.rs`: runnable preview e2e command.
+- `deps/midnight-ledger/proof-server/src/local_poc_client.rs`: local CLI helper that simulates wallet-side local POC work and handoff creation.
+- `deps/midnight-ledger/proof-server/src/bin/local_poc_split_prove.rs`: runnable local-node e2e command.
 - `deps/midnight-ledger/zswap/src/construct.rs`: `new_split` constructors.
 - `deps/midnight-ledger/zswap/src/prove.rs`: split circuit key resolution.
 - `deps/midnight-ledger/zswap/static/*split*`: local split proving artifacts.
 - `tools/derive_midnight_zswap_seed.mjs`: temporary phrase-to-zswap-seed helper for the PoC.
-- `tools/preview_balance_submit_split_tx.mjs`: wallet SDK Dust balancing and submit bridge.
+- `tools/local_balance_submit_split_tx.mjs`: wallet SDK Dust balancing and submit bridge.
 
 ## Compiling Circuits
 
@@ -83,7 +84,7 @@ compact compile --no-communications-commitment circuits/wallet_attestation.compa
 compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
 ```
 
-Copy the generated client derivation artifacts into `circuits/static/client-derivation/` and the wallet attestation artifacts into `circuits/static/wallet-attestation/`. Mirror the verifier keys needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier` and `deps/midnight-ledger/zswap/static/wallet-attestation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+Copy the generated client derivation artifacts into `circuits/static/client-derivation/` and the wallet attestation artifacts into `circuits/static/wallet-attestation/`. Mirror the verifier key needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
 
 ## Environment
 
@@ -93,26 +94,24 @@ Create `.env`:
 cp .env.example .env
 ```
 
-Use the local-dev defaults from `.env.example`; the `MIDNIGHT_PREVIEW_*` prefix is historical and still targets the local undeployed network for this PoC:
+Use the local-dev defaults from `.env.example`:
 
 ```dotenv
-MIDNIGHT_PREVIEW_NODE_WS=ws://127.0.0.1:9944
-MIDNIGHT_PREVIEW_INDEXER_HTTP=http://127.0.0.1:8088/api/v4/graphql
-MIDNIGHT_PREVIEW_INDEXER_WS=ws://127.0.0.1:8088/api/v4/graphql/ws
-MIDNIGHT_PREVIEW_NETWORK_ID=undeployed
+MIDNIGHT_LOCAL_NODE_WS=ws://127.0.0.1:9944
+MIDNIGHT_LOCAL_INDEXER_HTTP=http://127.0.0.1:8088/api/v4/graphql
+MIDNIGHT_LOCAL_INDEXER_WS=ws://127.0.0.1:8088/api/v4/graphql/ws
+MIDNIGHT_LOCAL_NETWORK_ID=undeployed
 
-MIDNIGHT_PREVIEW_RECOVERY_PHRASE="<local-dev funded test phrase>"
-MIDNIGHT_PREVIEW_ACCOUNT=0
-MIDNIGHT_PREVIEW_ZSWAP_KEY_SCAN_LIMIT=1
-MIDNIGHT_PREVIEW_ZSWAP_EVENT_LIMIT=50000
-MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver shielded address>
-MIDNIGHT_PREVIEW_TRANSFER_AMOUNT=200000000
-MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc
-
-MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
+MIDNIGHT_LOCAL_RECOVERY_PHRASE="<local-dev funded test phrase>"
+MIDNIGHT_LOCAL_ACCOUNT=0
+MIDNIGHT_LOCAL_ZSWAP_KEY_SCAN_LIMIT=1
+MIDNIGHT_LOCAL_ZSWAP_EVENT_LIMIT=50000
+MIDNIGHT_LOCAL_RECIPIENT_SHIELDED_ADDRESS=<receiver shielded address>
+MIDNIGHT_LOCAL_TRANSFER_AMOUNT=200000000
+MIDNIGHT_LOCAL_ZSWAP_SEED_HEX=
 ```
 
-`.env` is gitignored. Do not commit it. `MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX` is
+`.env` is gitignored. Do not commit it. `MIDNIGHT_LOCAL_ZSWAP_SEED_HEX` is
 only enough for prove-only helper paths; the full split-send e2e requires the
 recovery phrase so the helper can derive the matching Dust and unshielded keys.
 
@@ -164,7 +163,7 @@ will crash on the split-send block), override:
 MIDNIGHT_INDEXER_IMAGE=midnightntwrk/indexer-standalone:4.0.1
 ```
 
-## Run The Preview PoC
+## Run The Local PoC
 
 Install dependencies once:
 
@@ -181,33 +180,30 @@ make e2e
 Expected output:
 
 ```text
-split-sent preview output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
+split-sent local output key_index=0 mt_index=<index> input_value=<raw NIGHT> transfer_value=<raw NIGHT> change_value=<raw NIGHT> token=<token-type> recipient=<shielded-address> status="proofBuilt" client_proof_ms=<ms> server_proof_ms=<ms> split_proof_total_ms=<ms> server_client_ratio=<ratio> proof_len=<bytes> tx_hash=<hash> tx_id=<id> tx_len=<hex chars> pre_submit_wasm_check=skipped inclusion=finalized block_hash=<hash>
 ```
 
-The underlying preview driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:
+The underlying local POC driver can still be run directly. By default it starts a local proof server on a random port. To use an already running proof server:
 
 ```bash
-cargo run --offline -p midnight-proof-server --bin preview-split-prove \
+cargo run --offline -p midnight-proof-server --bin local-poc-split-prove \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --proof-server-url http://127.0.0.1:6300
 ```
 
 The command always assembles and submits the split-send transaction. It sends
-`MIDNIGHT_PREVIEW_TRANSFER_AMOUNT` raw NIGHT units to
-`MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS`, defaulting to 500 NIGHT, and
+`MIDNIGHT_LOCAL_TRANSFER_AMOUNT` raw NIGHT units to
+`MIDNIGHT_LOCAL_RECIPIENT_SHIELDED_ADDRESS`, defaulting to 500 NIGHT, and
 returns any remainder as shielded change to the spender wallet. Submission
-defaults to `MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc`, which uses the wallet
-SDK to sync Dust, add fee-balancing `DustActions`, finalize the transaction, and
-then submit the finalized transaction directly through node RPC. The selected
-wallet must have enough spendable Dust. Use
-`MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=wallet` to submit through the wallet SDK
-watcher instead.
+uses the wallet SDK to sync Dust, add fee-balancing `DustActions`, and finalize
+the transaction, then submits the finalized transaction directly through local
+node RPC. The selected wallet must have enough spendable Dust.
 The helper uses local wallet SDK packages when installed, or
-`../one-am-wallet/node_modules`; override with `MIDNIGHT_PREVIEW_WALLET_NODE_MODULES`.
+`../one-am-wallet/node_modules`; override with `MIDNIGHT_LOCAL_WALLET_NODE_MODULES`.
 First-time Dust proving may need to download and verify Dust proving assets; the
 helper retries `finalizeRecipe` twice by default. Tune with
-`MIDNIGHT_PREVIEW_DUST_PROVE_ATTEMPTS` and
-`MIDNIGHT_PREVIEW_DUST_PROVE_RETRY_DELAY_MS`.
+`MIDNIGHT_LOCAL_DUST_PROVE_ATTEMPTS` and
+`MIDNIGHT_LOCAL_DUST_PROVE_RETRY_DELAY_MS`.
 
 When testing against the local Docker stack, the node and indexer images need
 matching ledger/zswap code. The rebuilt indexer image
@@ -225,13 +221,13 @@ replay, the e2e path uses these checks:
 - Rust-side `Input<Proof>::well_formed` and `Output<Proof>::well_formed` are
   called before the tx is assembled, using the locally-built zswap verifier
   keys, so the Zswap proof is verified against the same code the rebuilt node
-  runs (see `preview_client.rs`).
+  runs (see `local_poc_client.rs`).
 - The wallet helper uses `author_submitAndWatchExtrinsic` and waits for the
   node to report `finalized` by default before resolving. Tune with
-  `MIDNIGHT_PREVIEW_RAW_RPC_WAIT_FOR=submitted|inBlock|finalized`. The node's
+  `MIDNIGHT_LOCAL_RAW_RPC_WAIT_FOR=submitted|inBlock|finalized`. The node's
   inclusion check uses the same locally-built ledger code as the proof-server.
 - An optional JS-side `ledger.wellFormed` check is available via
-  `MIDNIGHT_PREVIEW_VALIDATE_LEDGER_WASM=1`. Off by default because the
+  `MIDNIGHT_LOCAL_VALIDATE_LEDGER_WASM=1`. Off by default because the
   registry `@midnight-ntwrk/ledger-v8` wasm package links the packaged zswap
   verifier and will reject locally-modified proofs even when the local node
   accepts them — same root cause as the stock indexer crash.
@@ -260,8 +256,7 @@ Request shape:
   "contractAddress": null,
   "zswapState": "<serialized zswap state hex>",
   "clientDerivationProof": "<serialized client derivation proof hex>",
-  "attestedCommitmentSk": "<32-byte field hex>",
-  "attestationProof": "<serialized wallet attestation proof hex>",
+  "registryRoot": "<32-byte field hex>",
   "prove": true
 }
 ```
@@ -284,7 +279,7 @@ When `"prove": true`, the endpoint requires `zswapState` or `zswapStateFile`. Th
 
 ## What Is Still Missing
 
-- Move the PoC preview client logic into the real wallet/client integration point.
+- Move the PoC local client logic into the real wallet/client integration point.
 - Replace full `zswapState` handoff with the smallest acceptable Merkle witness if that is the desired production API.
 - Move the wallet SDK Dust balancing bridge into the real wallet/client integration point.
 - Harden the endpoint and request validation for production.
@@ -294,7 +289,7 @@ When `"prove": true`, the endpoint requires `zswapState` or `zswapStateFile`. Th
 Compile the CLI:
 
 ```bash
-cargo check --offline -p midnight-proof-server --bin preview-split-prove \
+cargo check --offline -p midnight-proof-server --bin local-poc-split-prove \
   --manifest-path deps/midnight-ledger/Cargo.toml
 ```
 
@@ -311,9 +306,9 @@ Run the live full split-send e2e test. This is opt-in because it uses wallet
 secrets from `.env`, the configured indexer/node, and a local proof server:
 
 ```bash
-MIDNIGHT_RUN_PREVIEW_E2E=1 \
-MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver> \
-cargo test --offline -p midnight-proof-server preview_wallet_proves_real_unspent_split_spend \
+MIDNIGHT_RUN_LOCAL_E2E=1 \
+MIDNIGHT_LOCAL_RECIPIENT_SHIELDED_ADDRESS=<receiver> \
+cargo test --offline -p midnight-proof-server local_wallet_proves_real_unspent_split_spend \
   --manifest-path deps/midnight-ledger/Cargo.toml \
   -- --nocapture
 ```
