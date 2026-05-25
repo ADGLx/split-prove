@@ -1,12 +1,12 @@
 [submodule "deps/midnight-ledger"]
 	path = deps/midnight-ledger
 	url = https://github.com/webisoftSoftware/midnight-ledger.git
-	branch = feature/split-prove-ledger-8.0.2
+	branch = registry-split-bundle
 [submodule "deps/midnight-node"]
 	path = deps/midnight-node
 	url = https://github.com/ADGLx/midnight-node.git
-	branch = feature/split-prove-node-0.22.3
+	branch = registry-split-bundle-node
 [submodule "deps/midnight-indexer"]
 	path = deps/midnight-indexer
 	url = https://github.com/ADGLx/midnight-indexer.git
-	branch = feature/split-prove-indexer-4.0.1
+	branch = registry-split-bundle-indexer
