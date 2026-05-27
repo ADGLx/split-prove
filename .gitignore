@@ -12,3 +12,4 @@ deps/midnight-ledger-old/
 .env
 .env.*
 !.env.example
+.native-data
