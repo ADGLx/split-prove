@@ -13,7 +13,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 ## midnight-ledger
 
-`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta keeps split admission ledger-verified while moving the registry check to a host-installed root checker for the local POC.
+`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta keeps split admission ledger-verified by checking split roots against the configured registry contract's current tree root; synthetic local roots are accepted only under `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`.
 
 ### Latest ledger delta: local registry-root split proof
 
@@ -24,7 +24,7 @@ The current split-prove stack keeps the Solution A v4 proof shape. The wallet cr
   - `spend_split_proof` (server) - Merkle membership of the spent coin, value commitment, nullifier insertion, and `coin_binding_tag`.
   - `client_derivation_proof` (per spend) - proves the canonical nullifier, `coin_binding_tag`, and `registry_root` from one wallet witness whose `reg_leaf` is a Merkle-path member.
   - Shared public inputs: `coin_binding_tag`, `registry_root`.
-- The rebuilt node verifies both proofs during normal zswap `well_formed()` checks and then asks the process-wide registry-root checker whether `registry_root` is admissible. The local proof-server, node, and indexer install a permissive checker; binaries that forget to install a checker fail closed.
+- The rebuilt node validates `registry_root` against `LedgerParameters.split_registry_contract` and the registry contract's current tree root, then verifies both proofs during zswap `well_formed_with_registry_policy()` checks. Synthetic local roots require `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`.
 - The one-time wallet attestation proof remains wallet-side first-registration evidence. It is used to build the synthetic local witness and does not travel in the split proof bundle.
 - The client derivation circuit proves the canonical Zswap nullifier (`midnight:zswap-cn[v1]`), so a stock spend and a split spend of the same coin still collide in the ledger nullifier set.
 
@@ -46,7 +46,7 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof as local f
         ‖ u32 LE len ‖ client_derivation_proof
         ‖ coin_binding_tag[32] ‖ registry_root[32]
   ```
-- Split inputs verify `CLIENT_DERIVATION_VK` against `(nullifier, coin_binding_tag, registry_root)`, call the host-installed registry-root checker, then verify `SPEND_SPLIT_VK`.
+- Split inputs verify `CLIENT_DERIVATION_VK` against `(nullifier, coin_binding_tag, registry_root)`, enforce the caller-provided registry-root policy, then verify `SPEND_SPLIT_VK`.
 - Plain inputs still verify with the stock `SPEND_VK`; malformed split envelopes are rejected explicitly via `MalformedSplitProofBundle`.
 
 **Circuit/artifact changes** ([deps/midnight-ledger/zswap/zswap-split.compact](../deps/midnight-ledger/zswap/zswap-split.compact), [deps/midnight-ledger/zswap/static](../deps/midnight-ledger/zswap/static))
@@ -67,7 +67,7 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof as local f
 - `Input<ProofPreimage>::delta()` and `binding_randomness()` are unchanged — the split witness trailer layout (`nullifier` appended after `rc`) is preserved, so local submit-path Pedersen binding randomness still matches what the node recomputes.
 - `/v2/prove-split-spend` ([endpoints.rs](../deps/midnight-ledger/proof-server/src/endpoints.rs)) accepts `clientDerivationProof` and `registryRoot`; it verifies the 3-cell client proof transcript before server proving.
 - [local_poc_client.rs](../deps/midnight-ledger/proof-server/src/local_poc_client.rs) generates wallet attestation evidence once per local POC run, creates a synthetic first-registration Merkle witness, attaches only `clientDerivationProof` and `registryRoot` to every `/v2/prove-split-spend` POST, and keeps `sk`, `r`, `salt`, and the registry path wallet-side.
-- The synthetic split-spend integration test deserializes `provedInputHex`, calls `Input<Proof>::well_formed(0)`, and asserts that a raw split proof without the client proof, a tampered nullifier, a tampered `coinBindingTag`, a tampered `registryRoot`, and a malformed split envelope are all rejected (`MalformedSplitProofBundle`).
+- The synthetic split-spend integration test deserializes `provedInputHex`, checks that direct `Input<Proof>::well_formed(0)` rejects split proofs without an explicit registry policy, and asserts that a raw split proof without the client proof, a tampered nullifier, a tampered `coinBindingTag`, a tampered `registryRoot`, and a malformed split envelope are all rejected (`MalformedSplitProofBundle`).
 
 **Build impact**
 - Rebuild the node, indexer, and proof-server images after verifier changes so they have the current envelope code and circuit blobs. The zswap input/offer outer wire tags remain compatible with local-dev's stock wallet SDK; only the opaque proof envelope changed.

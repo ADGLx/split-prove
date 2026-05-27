@@ -42,7 +42,7 @@ The patched node verifies the v4 split bundle: `pi_sk`, `pi_spend`, and the shar
 - `coinBindingTag`;
 - `registryRoot`.
 
-The transaction is accepted only if both proofs verify and the host-installed registry-root checker accepts `registryRoot`. The local proof-server/node/indexer install a permissive checker for the POC.
+The transaction is accepted only if both proofs verify and `registryRoot` is the current root of the configured wallet-registry contract. Synthetic local roots require the explicit `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` opt-in.
 
 ## Why The Wallet Proof Is Smaller
 

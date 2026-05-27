@@ -16,8 +16,8 @@
 //! Per-spend, the wallet feeds `(r, salt, merkle_path)` to the client circuit
 //! (see `src/client.rs`). The per-spend proof opens `reg_leaf` to a
 //! Merkle-path member; the admission verifier checks the resulting
-//! `registry_root` through the host-installed registry-root checker. The local
-//! proof-server/node/indexer binaries install a permissive checker.
+//! `registry_root` against the configured registry contract's current root.
+//! Synthetic local roots require `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`.
 //!
 //! Public outputs of the *attestation* circuit shrink to a single
 //! `reg_leaf` field — `pk` and `C_sk` are no longer disclosed. The chain of

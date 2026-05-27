@@ -15,8 +15,8 @@
 // (`commitment_merkle_tree.insertHash(upgradeFromTransient(new_com))`).
 //
 // Tree height 20 → ~1M wallets per deployment. The standard
-// `HistoricMerkleTree` gadget automatically maintains the root history
-// the admission verifier reads via `install_registry_root_checker`.
+// `HistoricMerkleTree` gadget stores the current tree root that admission
+// reads from contract state.
 
 import CompactStandardLibrary;
 

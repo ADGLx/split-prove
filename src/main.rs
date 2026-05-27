@@ -8,8 +8,8 @@
 //!
 //! Solution A change vs. v3: the wallet's `(pk, C_sk)` are no longer
 //! disclosed on chain. The only wallet-identifying public value the server
-//! emits is `registry_root`; local POC binaries accept it through a
-//! permissive host-installed registry-root checker.
+//! emits is `registry_root`; production admission accepts it only when it is
+//! the configured registry contract's current root.
 
 use midnight_base_crypto::hash::HashOutput;
 use midnight_coin_structure::coin::{
@@ -205,8 +205,7 @@ fn main() {
     println!("  Server would then:  prove() → ~960 ms (Solution A's +20-Poseidon membership)");
 
     println!("\n=== Local-node POC assumptions ===");
-    println!("  - The proof-server, node, and indexer install a permissive");
-    println!("    registry-root checker at startup for the local POC.");
+    println!("  - Synthetic registry roots require MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1.");
     println!("  - The wallet-side client generates a synthetic first-registration");
     println!("    registry witness; no registry contract is deployed or called.");
     println!("  - Transaction submission is raw RPC to the local undeployed node.");

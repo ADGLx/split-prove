@@ -26,7 +26,7 @@ use midnight_coin_structure::transfer::{Recipient, SenderEvidence};
 use midnight_onchain_runtime::ops::Op;
 use midnight_onchain_runtime::program_fragments::Cell_write;
 use midnight_onchain_runtime::result_mode::ResultModeVerify;
-use midnight_onchain_runtime::state::StateValue;
+use midnight_onchain_runtime::state::{ContractState, StateValue};
 use midnight_storage::arena::Sp;
 use midnight_storage::db::InMemoryDB;
 use midnight_transient_crypto::curve::Fr;
@@ -313,8 +313,8 @@ pub fn client_prepare_with_registry_root(
 /// path. The wallet calls this on every spend.
 ///
 /// The caller is responsible for supplying a `RegistryWitness` whose
-/// `merkle_path` resolves to the stamped `registry_root`; local POC
-/// admission accepts that root through a permissive host checker.
+/// `merkle_path` resolves to the stamped `registry_root`; production
+/// admission accepts only the configured registry contract's current root.
 pub fn client_prepare_with_registry(
     sk: &CoinSecretKey,
     coin: &QualifiedCoinInfo,
@@ -519,23 +519,88 @@ pub fn handoff_commitment(handoff: &ClientHandoff) -> Commitment {
     Commitment(HashOutput(handoff.commitment_hash))
 }
 
-/// Refresh the wallet's locally-cached Merkle membership path. Production
-/// wallets should call this whenever the registry tree grows past their
-/// cached path's depth — see `tools/refresh_registry_path.mjs` for a
-/// reference implementation that reads contract state via the indexer.
-///
-/// This stub mirrors the wallet-side API the rest of the SDK expects; the
-/// concrete implementation lives in the `tools/` script layer because it
-/// requires a live RPC connection to the indexer.
+fn current_registry_tree(
+    contract_state: &ContractState<InMemoryDB>,
+) -> Result<
+    (
+        &midnight_transient_crypto::merkle_tree::MerkleTree<(), InMemoryDB>,
+        u64,
+    ),
+    String,
+> {
+    let malformed = || "malformed registry contract state".to_string();
+    let top_level = match contract_state.data.get_ref() {
+        StateValue::Array(top_level) => top_level,
+        _ => return Err(malformed()),
+    };
+    let historic_tree = match top_level.get(0) {
+        Some(StateValue::Array(historic_tree)) => historic_tree,
+        _ => return Err(malformed()),
+    };
+    let current_tree = match historic_tree.get(0) {
+        Some(StateValue::BoundedMerkleTree(current_tree)) => {
+            if current_tree.height() != REGISTRY_TREE_HEIGHT {
+                return Err(malformed());
+            }
+            current_tree
+        }
+        _ => return Err(malformed()),
+    };
+    let first_free = match historic_tree.get(1) {
+        Some(StateValue::Cell(value)) => u64::try_from(&*value.as_slice())
+            .map_err(|_| "malformed registry first-free index".to_string())?,
+        _ => return Err(malformed()),
+    };
+    Ok((current_tree, first_free))
+}
+
+/// Build a fresh registry witness from serialized registry contract state that
+/// has already been fetched by the wallet/indexer integration layer.
+pub fn refresh_registry_path_from_state(
+    registration: &WalletRegistration,
+    contract_state: &ContractState<InMemoryDB>,
+) -> Result<RegistryWitness, String> {
+    let leaf_hash = HashOutput(registration.reg_leaf_bytes());
+    let (current_tree, first_free) = current_registry_tree(contract_state)?;
+    let (index, _) = current_tree
+        .iter()
+        .find(|(_, hash)| *hash == leaf_hash)
+        .ok_or_else(|| "wallet registration leaf is not present in registry state".to_string())?;
+    if index >= first_free {
+        return Err(
+            "wallet registration leaf is outside the registry first-free range".to_string(),
+        );
+    }
+    let merkle_path = current_tree
+        .path_for_leaf(index, ((), leaf_hash))
+        .map_err(|e| format!("registry path_for_leaf failed: {e}"))?;
+    let registry_root = raw_leaf_hash_root(leaf_hash, &merkle_path);
+    let current_root = current_tree
+        .root()
+        .ok_or_else(|| "registry current tree is not rehashed".to_string())?;
+    if registry_root != current_root {
+        return Err(format!(
+            "registry path resolves to {:?} but current root is {:?}",
+            registry_root, current_root
+        ));
+    }
+    Ok(RegistryWitness {
+        blinding: registration.blinding,
+        salt: registration.salt,
+        merkle_path,
+        registry_root,
+    })
+}
+
+/// Refresh the wallet's locally-cached Merkle membership path from a fetched
+/// registry contract state. The caller is responsible for fetching the state
+/// for `registry_contract_address` from its node/indexer view.
 pub async fn refresh_registry_path(
     _registry_contract_address: ContractAddress,
-    _registration: &WalletRegistration,
+    registration: &WalletRegistration,
+    contract_state: &ContractState<InMemoryDB>,
 ) -> Result<RegistryWitness, String> {
-    Err(
-        "refresh_registry_path: implement against the indexer/contract-state \
-         API in tools/; see comments in src/client.rs for the wire format"
-            .to_string(),
-    )
+    refresh_registry_path_from_state(registration, contract_state)
 }
 
 #[cfg(test)]
@@ -573,6 +638,70 @@ mod tests {
             .rev()
             .find_map(|(a, b)| (a != b).then_some(a > b))
             .unwrap_or(true)
+    }
+
+    fn registry_contract_state(
+        leaf_hash: HashOutput,
+        index: u64,
+        first_free: u64,
+    ) -> ContractState<InMemoryDB> {
+        let tree = midnight_transient_crypto::merkle_tree::MerkleTree::<(), InMemoryDB>::blank(
+            REGISTRY_TREE_HEIGHT,
+        )
+        .update_hash(index, leaf_hash, ())
+        .rehash();
+        let historic_tree = StateValue::Array(
+            vec![
+                StateValue::BoundedMerkleTree(tree),
+                StateValue::Cell(Sp::new(first_free.into())),
+                StateValue::Map(midnight_storage::storage::HashMap::default()),
+            ]
+            .into(),
+        );
+        ContractState::new(
+            StateValue::Array(vec![historic_tree].into()),
+            midnight_storage::storage::HashMap::default(),
+            midnight_onchain_runtime::state::ContractMaintenanceAuthority::default(),
+        )
+    }
+
+    #[test]
+    fn refresh_registry_path_from_state_builds_current_witness() {
+        let registration = WalletRegistration {
+            blinding: Fr::from(1u64),
+            salt: Fr::from(2u64),
+            reg_leaf_fr: Fr::from(3u64),
+            attestation_proof: String::new(),
+        };
+        let leaf_hash = HashOutput(registration.reg_leaf_bytes());
+        let contract_state = registry_contract_state(leaf_hash, 3, 4);
+
+        let witness = refresh_registry_path_from_state(&registration, &contract_state)
+            .expect("registry witness refresh succeeds");
+
+        assert_eq!(witness.blinding, registration.blinding);
+        assert_eq!(witness.salt, registration.salt);
+        assert_eq!(witness.merkle_path.leaf, ((), leaf_hash));
+        assert_eq!(
+            witness.registry_root,
+            raw_leaf_hash_root(leaf_hash, &witness.merkle_path)
+        );
+    }
+
+    #[test]
+    fn refresh_registry_path_from_state_rejects_missing_leaf() {
+        let registration = WalletRegistration {
+            blinding: Fr::from(1u64),
+            salt: Fr::from(2u64),
+            reg_leaf_fr: Fr::from(3u64),
+            attestation_proof: String::new(),
+        };
+        let other_leaf = HashOutput([9u8; 32]);
+        let contract_state = registry_contract_state(other_leaf, 0, 1);
+
+        let err = refresh_registry_path_from_state(&registration, &contract_state)
+            .expect_err("missing wallet registration leaf must fail");
+        assert!(err.contains("not present"), "unexpected error: {err}");
     }
 
     #[test]

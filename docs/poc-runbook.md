@@ -41,7 +41,7 @@ proof server
 
 local chain
   verify client-derivation and spend-split proofs in node admission
-  accept registryRoot through the local permissive checker
+  accept registryRoot only if it matches the configured registry contract root
   read through the indexer
   Dust-balance with the wallet SDK and submit through raw RPC
 ```
