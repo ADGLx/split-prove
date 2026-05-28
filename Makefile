@@ -12,7 +12,7 @@ INDEXER_BIN      ?= deps/midnight-indexer/target/release/indexer-standalone
 INDEXER_CONFIG   ?= $(CURDIR)/deps/midnight-indexer/indexer-standalone/config.yaml
 
 .PHONY: e2e rebuild-images local-ledger-js local-nodes \
-        build-native build-node build-indexer \
+        build-native build-node build-indexer regen-genesis \
         native-node native-indexer native-proof-server native-fund native-clean
 
 # Fast path: assumes the docker images already include the Solution A code
@@ -66,6 +66,23 @@ local-nodes: local-ledger-js
 
 build-native: build-node build-indexer
 
+# Regenerate genesis state when ledger-parameters-config.json changes (e.g. new
+# fields added to LedgerParameters that break deserialization of the old binary).
+# Writes genesis_state_undeployed.mn and genesis_block_undeployed.mn in-place.
+regen-genesis:
+	mkdir -p /tmp/split-prove-genesis-seeds
+	printf '{\n  "wallet-seed-0": "0000000000000000000000000000000000000000000000000000000000000001",\n  "wallet-seed-1": "0000000000000000000000000000000000000000000000000000000000000002",\n  "wallet-seed-2": "0000000000000000000000000000000000000000000000000000000000000003",\n  "wallet-seed-3": "a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9"\n}\n' \
+	    > /tmp/split-prove-genesis-seeds/undeployed.json
+	cd deps/midnight-node && \
+	cargo run --release --locked -p midnight-node-toolkit -- generate-genesis \
+	    --network undeployed \
+	    --seeds-file /tmp/split-prove-genesis-seeds/undeployed.json \
+	    --ledger-parameters-config res/dev/ledger-parameters-config.json \
+	    --cnight-generates-dust-config res/dev/cnight-config.json \
+	    --ics-config res/dev/ics-config.json \
+	    --reserve-config res/dev/reserve-config.json \
+	    --out-dir res/genesis
+
 build-node:
 	cd deps/midnight-node && cargo build --release -p midnight-node --locked
 
@@ -79,6 +96,7 @@ $(NATIVE_DATA_DIR):
 native-node: build-node | $(NATIVE_DATA_DIR)
 	cd deps/midnight-node && \
 	CFG_PRESET=dev \
+	MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1 \
 	SIDECHAIN_BLOCK_BENEFICIARY=04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e \
 	APPEND_ARGS="--base-path $(CURDIR)/$(NATIVE_DATA_DIR)/node" \
 	$(CURDIR)/$(NODE_BIN)
@@ -86,6 +104,7 @@ native-node: build-node | $(NATIVE_DATA_DIR)
 # Terminal 2 — wait for the node to be ready first
 native-indexer: build-indexer | $(NATIVE_DATA_DIR)
 	CONFIG_FILE=$(INDEXER_CONFIG) \
+	MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1 \
 	APP__APPLICATION__NETWORK_ID=undeployed \
 	APP__INFRA__NODE__URL=ws://127.0.0.1:9944 \
 	APP__INFRA__STORAGE__CNN_URL=$(CURDIR)/$(NATIVE_DATA_DIR)/indexer.sqlite \
