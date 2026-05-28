@@ -13,13 +13,11 @@ deps/midnight-ledger-old/
 .env.*
 !.env.example
 .native-data
-# Solution A registry-deploy scratch output and runtime address file.
-# `tools/deploy_registry.sh` writes a placeholder address to
-# contract_address.txt on every run; the compact compiler can leave
-# scratch subdirs under circuits/static/wallet-registry/ when invoked
-# directly (the script itself uses a temp dir and copies flat files
-# `register.{bzkir,prover,verifier,zkir}` into the static directory).
-circuits/static/wallet-registry/contract_address.txt
+# `compact compile` writes into compiler/contract/keys/zkir subdirs when
+# invoked directly against circuits/static/wallet-registry/. The committed
+# artifacts (`register.{bzkir,prover,verifier,zkir}`) live flat under the
+# directory and are force-tracked past the global `*.bzkir`/`*.prover`/
+# `*.verifier` ignore (precedent: wallet-attestation).
 circuits/static/wallet-registry/compiler/
 circuits/static/wallet-registry/contract/
 circuits/static/wallet-registry/keys/

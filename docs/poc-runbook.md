@@ -81,10 +81,11 @@ Use the local Compact CLI directly when regenerating the split-prove artifacts:
 ```bash
 compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
 compact compile --no-communications-commitment circuits/wallet_attestation.compact /tmp/wallet-attest-compile
+compact compile --no-communications-commitment circuits/wallet_registry.compact /tmp/wallet-registry-compile
 compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
 ```
 
-Copy the generated client derivation artifacts into `circuits/static/client-derivation/` and the wallet attestation artifacts into `circuits/static/wallet-attestation/`. Mirror the verifier key needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
+Copy the generated client derivation artifacts into `circuits/static/client-derivation/`, the wallet attestation artifacts into `circuits/static/wallet-attestation/`, and the wallet registry artifacts (`register.{bzkir,prover,verifier,zkir}`) into `circuits/static/wallet-registry/`. Mirror the verifier key needed by node admission into `deps/midnight-ledger/zswap/static/client-derivation.verifier`. Copy the generated zswap `spendSplitUser` and `signSplitUser` artifacts into `deps/midnight-ledger/zswap/static/`, update the `.sha256` sidecars, and mirror `spendSplitUser.zkir` to `deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir`.
 
 ## Environment
 

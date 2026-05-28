@@ -13,7 +13,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 ## midnight-ledger
 
-`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta keeps split admission ledger-verified by checking split roots against the configured registry contract's current tree root; synthetic local roots are accepted only under `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`.
+`git diff 641d18e5...HEAD` (merge-base based): split-prove commits plus local working-tree changes sit on top of the `no-sk` baseline. The latest working-tree delta keeps split admission ledger-verified by checking split roots against the configured registry contract's current tree root. The `wallet_registry` contract is deployed by the toolkit at genesis (`GenesisGenerator::deploy_wallet_registry`), so `LedgerParameters.split_registry_contract` resolves to a real on-chain contract from block 0. The wallet still builds a synthetic single-leaf merkle witness; that synthetic root is accepted by admission only under `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`. The flag drops once the wallet starts reading the contract's live tree (Phase 3 of the gap-closure plan).
 
 ### Latest ledger delta: local registry-root split proof
 
@@ -54,13 +54,15 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof as local f
 - Mirrored `spend-split.zkir` into [deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir](../deps/midnight-ledger/zkir-precompiles/zswap/spend-split.zkir).
 - [deps/midnight-ledger/zswap/static/client-derivation.verifier](../deps/midnight-ledger/zswap/static/client-derivation.verifier) matches the current `sk_prove` circuit, whose public transcript has 3 cells: `nullifier`, `coin_binding_tag`, and `registry_root`. Source lives at [circuits/sk_proof.compact](../circuits/sk_proof.compact) in the parent repo; regenerate after any change.
 - [circuits/wallet_attestation.compact](../circuits/wallet_attestation.compact) remains the wallet-side first-registration proof. It is not linked into node/indexer admission in the local POC.
+- [circuits/wallet_registry.compact](../circuits/wallet_registry.compact) is the on-chain registry contract (`register(leaf: Bytes<32>)` over a `HistoricMerkleTree<20, Bytes<32>>`). Compiled artifacts (`register.{bzkir,prover,verifier,zkir}`) live under [circuits/static/wallet-registry/](../circuits/static/wallet-registry/) and are loaded by the genesis-time contract-deploy path so `LedgerParameters.split_registry_contract` resolves to a real deployed contract.
 - Artifacts are regenerated with the local Compact CLI, for example:
   ```bash
   compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
   compact compile --no-communications-commitment circuits/wallet_attestation.compact /tmp/wallet-attestation-compile
+  compact compile --no-communications-commitment circuits/wallet_registry.compact /tmp/wallet-registry-compile
   compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
   ```
-  Then copy `sk_prove.verifier` to `deps/midnight-ledger/zswap/static/client-derivation.verifier`; wallet attestation artifacts are kept client/proof-server side for local witness generation.
+  Then copy `sk_prove.verifier` to `deps/midnight-ledger/zswap/static/client-derivation.verifier`; copy the wallet-registry `register.{bzkir,prover,verifier,zkir}` into `circuits/static/wallet-registry/`; wallet attestation artifacts are kept client/proof-server side for local witness generation.
 
 **Construct/prove/proof-server flow**
 - `Input::new_split()` takes `coin_binding_tag`, `registry_root`, and `client_derivation_proof`, and threads them into the emitted `SplitProofBundle`. The split proving context returns `provedInputHex` with an encoded `ZswapInputProof::Split` envelope; the HTTP endpoint does not hand-build the envelope.

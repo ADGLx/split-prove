@@ -12,7 +12,7 @@ The wallet can generate `pi_attest` once per key as first-registration evidence.
 - `C_sk` commits to that `sk` using wallet-only randomness `r`;
 - `reg_leaf` commits to `C_sk` with a wallet-only `salt`.
 
-In the local-node POC this evidence is kept wallet-side; the client builds a synthetic first-registration Merkle witness instead of deploying a registry contract.
+In the local-node POC this evidence is kept wallet-side. The `wallet_registry` contract (`circuits/wallet_registry.compact`) is now deployed at genesis by `GenesisGenerator::deploy_wallet_registry`, and the resulting `ContractAddress` is baked into `LedgerParameters.split_registry_contract`. The wallet still builds a synthetic single-leaf Merkle witness at spend time (it doesn't yet call `register(reg_leaf)` on the deployed contract nor read live contract state — those are Phases 2 and 3 of the closure), so split-bundle admission still requires `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` until the wallet starts using the on-chain tree.
 
 ### Per spend, client side
 
@@ -42,7 +42,7 @@ The patched node verifies the v4 split bundle: `pi_sk`, `pi_spend`, and the shar
 - `coinBindingTag`;
 - `registryRoot`.
 
-The transaction is accepted only if both proofs verify and `registryRoot` is the current root of the configured wallet-registry contract. Synthetic local roots require the explicit `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` opt-in.
+The transaction is accepted only if both proofs verify and `registryRoot` is the current root of the configured wallet-registry contract (the genesis-deployed instance at `LedgerParameters.split_registry_contract`). The local-node wallet still emits a synthetic root mismatching the on-chain blank tree, so admission with the synthetic witness requires `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`. Phases 2–3 (wallet submits `register(reg_leaf)` and reads the live tree) remove that requirement.
 
 ## Why The Wallet Proof Is Smaller
 
