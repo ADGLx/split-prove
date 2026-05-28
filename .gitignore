@@ -12,7 +12,7 @@ deps/midnight-ledger-old/
 .env
 .env.*
 !.env.example
-
+.native-data
 # Solution A registry-deploy scratch output and runtime address file.
 # `tools/deploy_registry.sh` writes a placeholder address to
 # contract_address.txt on every run; the compact compiler can leave
