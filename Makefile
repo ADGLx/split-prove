@@ -12,8 +12,9 @@ INDEXER_BIN      ?= deps/midnight-indexer/target/release/indexer-standalone
 INDEXER_CONFIG   ?= $(CURDIR)/deps/midnight-indexer/indexer-standalone/config.yaml
 
 .PHONY: e2e rebuild-images local-ledger-js local-nodes \
-        build-native build-node build-indexer regen-genesis \
-        native-node native-indexer native-proof-server native-fund native-clean
+        build-native build-node build-indexer build-register-wallet regen-genesis \
+        native-node native-indexer native-proof-server native-fund native-clean \
+        register-wallet
 
 # Fast path: assumes the docker images already include the Solution A code
 # and the local stack is running. Use this for tight inner-loop development
@@ -132,3 +133,18 @@ native-fund:
 
 native-clean:
 	rm -rf $(NATIVE_DATA_DIR)
+
+# ── Phase 2: wallet → registry contract call ────────────────────────────────
+# Submits `register(reg_leaf)` to the genesis-deployed wallet_registry. Run
+# once per wallet, after `make native-node` is up. Idempotent — re-running
+# after the leaf is on-chain prints `status: already_registered`.
+
+REGISTER_WALLET_BIN ?= deps/midnight-ledger/target/release/local-poc-register-wallet
+
+build-register-wallet:
+	cd deps/midnight-ledger && \
+	cargo build --release -p midnight-proof-server --bin local-poc-register-wallet --locked
+
+register-wallet: build-register-wallet
+	set -a; [ ! -f "$(ENV_FILE)" ] || . "$(CURDIR)/$(ENV_FILE)"; set +a; \
+	$(CURDIR)/$(REGISTER_WALLET_BIN)
