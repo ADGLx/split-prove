@@ -21,7 +21,9 @@ wallet/client
     build Merkle state/path
 
   split-prove handoff:
-    generate wallet attestation evidence and synthetic first-registration witness
+    generate wallet attestation evidence (one-time per seed)
+    read the live wallet_registry contract state and find this wallet's reg_leaf
+    build a Merkle path against the chain's current root
     prove sk -> nullifier/coinBindingTag/registryRoot
     compute nullifier
     read selected output commitmentHash
@@ -61,7 +63,11 @@ The wallet-side per-spend client-derivation circuit is intentionally smaller tha
 | `wallet_attest` / wallet attestation | 2.82 MB | one time per `sk`, wallet-local |
 | `spend-split` / server split spend | 5.74 MB | per spend, proof server |
 
-The wallet attestation evidence derives `reg_leaf = H(C_sk, salt)` once for the local POC. The per-spend client proof proves the canonical `nullifier = H_persistent(coin, sk)`, discloses `coinBindingTag = H_transient(domain, coin, pk)`, and proves the synthetic registry membership path resolves to `registryRoot`. The server split proof computes the canonical coin commitment internally, checks the Merkle leaf, inserts the public nullifier, carries the same `coinBindingTag` and `registryRoot`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+The wallet attestation evidence derives `reg_leaf = H(C_sk, salt)` once per seed, with `(r, salt)` themselves derived deterministically from `sk` so the same wallet always produces the same `reg_leaf` across runs. The wallet submits `register(reg_leaf)` once via `make register-wallet`, then every subsequent spend reads the live `wallet_registry` contract state, locates its `reg_leaf` in the chain's `BoundedMerkleTree<20>`, and builds the path on the fly — the per-spend `registryRoot` therefore equals `current_split_registry_root(state)`. Ledger admission rejects any other root with `MalformedTransaction::SplitRegistryRootNotCurrent` (no `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` bypass on the supported path). The per-spend client proof proves the canonical `nullifier = H_persistent(coin, sk)`, discloses `coinBindingTag = H_transient(domain, coin, pk)`, and proves the registry membership path resolves to `registryRoot`. The server split proof computes the canonical coin commitment internally, checks the Merkle leaf, inserts the public nullifier, carries the same `coinBindingTag` and `registryRoot`, and proves the value commitment. The e2e report treats the per-spend client proof and server proof durations as the primary split-prove comparison and separates out attestation, scan, handoff overhead, output proving, Dust balancing, and submit time because those are setup or full transaction workflow costs.
+
+### Negative-control knob
+
+Set `MIDNIGHT_LOCAL_FORCE_CORRUPT_REGISTRY_WITNESS=1` to drive the wallet down a deliberately-corrupted witness path (real `reg_leaf` at index 0 plus a dummy leaf at index 1, which gives a different tree root than any chain-state with a single registered wallet). The per-spend proof itself stays well-formed (proof-server roundtrip succeeds), but ledger admission rejects the resulting bundle with `Custom error: 139` — the wire code for an unmapped `MalformedTransaction::SplitRegistryRootNotCurrent`. Use this to confirm the bypass is actually off on a fresh node.
 
 ## Important Files
 

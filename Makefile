@@ -97,7 +97,6 @@ $(NATIVE_DATA_DIR):
 native-node: build-node | $(NATIVE_DATA_DIR)
 	cd deps/midnight-node && \
 	CFG_PRESET=dev \
-	MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1 \
 	SIDECHAIN_BLOCK_BENEFICIARY=04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e \
 	APPEND_ARGS="--base-path $(CURDIR)/$(NATIVE_DATA_DIR)/node" \
 	$(CURDIR)/$(NODE_BIN)
@@ -105,7 +104,6 @@ native-node: build-node | $(NATIVE_DATA_DIR)
 # Terminal 2 — wait for the node to be ready first
 native-indexer: build-indexer | $(NATIVE_DATA_DIR)
 	CONFIG_FILE=$(INDEXER_CONFIG) \
-	MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1 \
 	APP__APPLICATION__NETWORK_ID=undeployed \
 	APP__INFRA__NODE__URL=ws://127.0.0.1:9944 \
 	APP__INFRA__STORAGE__CNN_URL=$(CURDIR)/$(NATIVE_DATA_DIR)/indexer.sqlite \

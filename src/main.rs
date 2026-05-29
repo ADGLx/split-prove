@@ -62,10 +62,12 @@ pub fn client_prepare(
     let commitment_hash = coin_info.commitment(&Recipient::from(sender_evidence));
     let coin_binding_tag = midnight_zswap::split_coin_binding_tag(&coin_info, pk);
 
-    // Solution A demo placeholder: the production wallet supplies the
-    // registry root from its `RegistryWitness`, fetched once per session via
-    // `refresh_registry_path`. The demo stubs it to zero — the resulting
-    // bundle will fail admission until a real witness is wired in.
+    // Demo placeholder: the production wallet supplies the registry root
+    // from its `RegistryWitness`, built once per session by reading the
+    // on-chain `wallet_registry` contract state (see
+    // `midnight-proof-server::wallet_registry_call::build_chain_registration_witness`).
+    // This standalone demo binary doesn't talk to a chain, so it stubs
+    // the root to zero — the value is never submitted.
     let registry_root = MerkleTreeDigest(Fr::from(0u64));
 
     ClientHandoff {
@@ -204,9 +206,11 @@ fn main() {
     );
     println!("  Server would then:  prove() → ~960 ms (Solution A's +20-Poseidon membership)");
 
-    println!("\n=== Local-node POC assumptions ===");
-    println!("  - Synthetic registry roots require MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1.");
-    println!("  - The wallet-side client generates a synthetic first-registration");
-    println!("    registry witness; no registry contract is deployed or called.");
+    println!("\n=== Local-node POC notes ===");
+    println!("  - The `wallet_registry` contract is deployed at genesis; the wallet");
+    println!("    submits `register(reg_leaf)` once per seed (see `make register-wallet`)");
+    println!("    and reads the live contract's Merkle path on every spend (see");
+    println!("    `midnight-proof-server::wallet_registry_call`). The per-spend");
+    println!("    `registryRoot` equals the chain's `current_split_registry_root`.");
     println!("  - Transaction submission is raw RPC to the local undeployed node.");
 }

@@ -12,7 +12,7 @@ The wallet can generate `pi_attest` once per key as first-registration evidence.
 - `C_sk` commits to that `sk` using wallet-only randomness `r`;
 - `reg_leaf` commits to `C_sk` with a wallet-only `salt`.
 
-In the local-node POC this evidence is kept wallet-side. The `wallet_registry` contract (`circuits/wallet_registry.compact`) is now deployed at genesis by `GenesisGenerator::deploy_wallet_registry`, and the resulting `ContractAddress` is baked into `LedgerParameters.split_registry_contract`. The wallet still builds a synthetic single-leaf Merkle witness at spend time (it doesn't yet call `register(reg_leaf)` on the deployed contract nor read live contract state — those are Phases 2 and 3 of the closure), so split-bundle admission still requires `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` until the wallet starts using the on-chain tree.
+In the local-node POC this evidence is kept wallet-side. The `wallet_registry` contract (`circuits/wallet_registry.compact`) is deployed at genesis by `GenesisGenerator::deploy_wallet_registry`, and the resulting `ContractAddress` is baked into `LedgerParameters.split_registry_contract`. The wallet derives `(r, salt)` deterministically from `sk` (`derive_blinding_pair` in `midnight-proof-server::local_poc_client`), submits `register(reg_leaf)` once via `make register-wallet`, and on every subsequent spend reads the live `wallet_registry` contract state to build a Merkle path against the chain's current root. Ledger admission enforces `registryRoot == current_split_registry_root(state)` on every split bundle — the legacy `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` bypass is no longer required (and is no longer set by `make native-node` / `make native-indexer`); it remains in the ledger as a diagnostic switch.
 
 ### Per spend, client side
 
@@ -42,7 +42,7 @@ The patched node verifies the v4 split bundle: `pi_sk`, `pi_spend`, and the shar
 - `coinBindingTag`;
 - `registryRoot`.
 
-The transaction is accepted only if both proofs verify and `registryRoot` is the current root of the configured wallet-registry contract (the genesis-deployed instance at `LedgerParameters.split_registry_contract`). The local-node wallet still emits a synthetic root mismatching the on-chain blank tree, so admission with the synthetic witness requires `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`. Phases 2–3 (wallet submits `register(reg_leaf)` and reads the live tree) remove that requirement.
+The transaction is accepted only if both proofs verify and `registryRoot` is the current root of the configured wallet-registry contract (the genesis-deployed instance at `LedgerParameters.split_registry_contract`). The local-node wallet reads that root from live contract state via `midnight_contractState(<address>)`, so the value it emits matches `current_split_registry_root` by construction. Setting `MIDNIGHT_LOCAL_FORCE_CORRUPT_REGISTRY_WITNESS=1` swaps in a deliberately-mismatched synthetic witness so admission rejects with `MalformedTransaction::SplitRegistryRootNotCurrent` (wire code `Custom(139)` until the node enumerates the variant in its `MalformedError`).
 
 ## Why The Wallet Proof Is Smaller
 

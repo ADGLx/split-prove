@@ -73,11 +73,15 @@ make e2e
 
 Use local-dev option 6 to fund the split-prove wallet before running the e2e. The demo scans for the funded shielded output, builds the client proof, asks `/v2/prove-split-spend` for the server proof, assembles the transaction, balances Dust, submits it to the rebuilt local node, and waits for inclusion.
 
-The production admission path expects a deployed registry contract configured in ledger parameters. The synthetic local witness path is development-only and requires the local stack to be started with:
+The full registry-anchoring loop now runs end-to-end. The `wallet_registry` contract is deployed at genesis (`GenesisGenerator::deploy_wallet_registry`), the wallet submits `register(reg_leaf)` once per seed via `make register-wallet`, and every subsequent split spend reads the live contract state to build its Merkle path. Admission enforces `registryRoot == current_split_registry_root(state)` — the legacy `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` bypass is no longer set by `make native-node` / `make native-indexer` and the supported path is real-root validation. The bypass code remains in the ledger as a diagnostic switch.
+
+Negative control:
 
 ```bash
-MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1
+MIDNIGHT_LOCAL_FORCE_CORRUPT_REGISTRY_WITNESS=1 make e2e
 ```
+
+forces the wallet to build a structurally-mismatched witness; admission rejects with `MalformedTransaction::SplitRegistryRootNotCurrent` (wire code `Custom(139)`).
 
 ## Repo Layout
 

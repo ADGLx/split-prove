@@ -1,23 +1,26 @@
 //! Wallet registration / attestation circuit for split-prove (Solution A).
 //!
 //! One-time per-wallet flow:
-//!   1. Wallet draws `r` and `salt` uniformly at random.
+//!   1. Wallet derives `r` and `salt` deterministically from `sk` (see
+//!      `derive_blinding_pair` in
+//!      `midnight-proof-server::local_poc_client`).
 //!   2. Computes `C_sk = transientHash("midnight:sk-commit[v1]", sk, r)`.
 //!   3. Computes `reg_leaf = transientHash("midnight:wallet-reg[v1]", C_sk,
 //!      salt)`.
 //!   4. Runs the attestation circuit (this file's `register_wallet`) to
 //!      sanity-check the derivation against the canonical Zswap `pk = H(sk)`
 //!      witness binding.
-//!   5. Builds a synthetic first-registration witness for the local POC.
+//!   5. Submits `register(reg_leaf)` to the on-chain `wallet_registry`
+//!      contract (see `make register-wallet`).
 //!   6. Persists locally:
-//!         `WalletRegistration { r, salt, mt_index, leaf, merkle_path }`
-//!      The `merkle_path` is generated client-side for local proving.
+//!         `WalletRegistration { r, salt, reg_leaf_fr }`
+//!      The per-spend Merkle path is read from the live contract state at
+//!      spend time, not cached.
 //!
 //! Per-spend, the wallet feeds `(r, salt, merkle_path)` to the client circuit
 //! (see `src/client.rs`). The per-spend proof opens `reg_leaf` to a
 //! Merkle-path member; the admission verifier checks the resulting
 //! `registry_root` against the configured registry contract's current root.
-//! Synthetic local roots require `MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1`.
 //!
 //! Public outputs of the *attestation* circuit shrink to a single
 //! `reg_leaf` field — `pk` and `C_sk` are no longer disclosed. The chain of
