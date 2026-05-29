@@ -98,6 +98,17 @@ This PoC requires the patched ledger, node, and indexer. Stock hosted nodes do n
 
 The current privacy boundary is narrow and explicit: the proof server should not receive `sk`, registration blinding, registration salt, or the registry path secret inputs. On-chain split public inputs are limited to the shared split transcript fields, and normal double-spend semantics are preserved through the canonical zswap nullifier.
 
+## POC Caveats
+
+These are operational simplifications, not soundness issues. None of them block correctness on the local-node e2e; each would be revisited if this ships beyond a POC.
+
+- **Deterministic `(r, salt)` from `sk`.** The wallet derives its registration blinding pair as `transientHash(domain_sep, sk_limbs)` rather than HKDF-from-a-master-seed. Property required by the PoC: same wallet seed → same `reg_leaf` across the `register-wallet` run and every subsequent split spend, with no on-disk wallet state. Production wallets would derive `(r, salt)` from a master seed and a wallet identifier and persist them; the soundness chain (`reg_leaf` is bound to `sk` via Poseidon, `r`/`salt` stay private witnesses for every per-spend proof) is unchanged.
+- **Fixed registry-contract maintenance authority and deploy nonce.** `GenesisGenerator::deploy_wallet_registry` uses a hard-coded 32-byte nonce (`midnight:split-prove:wallet-reg!`) so the registry's `ContractAddress` is reproducible across `make regen-genesis` runs and can be baked into `ledger-parameters-config.json`. Production governance would parameterise the maintenance authority and use a randomly-chosen deploy nonce captured at genesis time.
+- **Single-network preset.** Only the `dev` / `undeployed` presets are wired up. Other network configs (`mainnet`, `preview`, etc.) keep `split_registry_contract: null` and are explicitly out of scope.
+- **Wire-code collapse for registry rejections.** Four `MalformedTransaction` variants (`SplitRegistryContractUnconfigured`, `SplitRegistryContractNotPresent`, `MalformedSplitRegistryState`, `SplitRegistryRootNotCurrent`) all collapse into substrate `Custom(139)` because the shared `MalformedTransaction → MalformedError` mapping in [deps/midnight-node/ledger/src/versions/common/conversions.rs](deps/midnight-node/ledger/src/versions/common/conversions.rs) covers both ledger v7 (no split-prove variants) and v8 (with them). The node still logs the actual variant name in its `log::warn!` line. Giving them distinct wire codes needs a cfg-gated split.
+- **`min_time_to_dismiss` headroom.** Dev preset bumped from 15 ms to 1 s to give the register-call tx (contract proof + Dust spend proof + 20-deep merkle-insert program) enough budget. Production presets untouched.
+- **`MIDNIGHT_SPLIT_REGISTRY_DEV_ACCEPT_ALL=1` bypass code remains in the ledger** as a diagnostic switch (off by default in the local stack). The supported path is real-root validation; the switch exists so that a future operator can opt back in to diagnose admission failures without rebuilding the node.
+
 More detail lives in:
 
 - [docs/poc-runbook.md](docs/poc-runbook.md) for local operation.
