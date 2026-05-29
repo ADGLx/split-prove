@@ -59,7 +59,7 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof as local f
   ```bash
   compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
   compact compile --no-communications-commitment circuits/wallet_attestation.compact /tmp/wallet-attestation-compile
-  compact compile --no-communications-commitment circuits/wallet_registry.compact /tmp/wallet-registry-compile
+  compact compile circuits/wallet_registry.compact /tmp/wallet-registry-compile  # NB: no --no-communications-commitment (ContractCall::public_inputs always pushes comm_com)
   compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
   ```
   Then copy `sk_prove.verifier` to `deps/midnight-ledger/zswap/static/client-derivation.verifier`; copy the wallet-registry `register.{bzkir,prover,verifier,zkir}` into `circuits/static/wallet-registry/`; wallet attestation artifacts are kept client/proof-server side for local witness generation.

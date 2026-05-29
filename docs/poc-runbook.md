@@ -81,7 +81,7 @@ Use the local Compact CLI directly when regenerating the split-prove artifacts:
 ```bash
 compact compile --no-communications-commitment circuits/sk_proof.compact /tmp/sk-prove-compile
 compact compile --no-communications-commitment circuits/wallet_attestation.compact /tmp/wallet-attest-compile
-compact compile --no-communications-commitment circuits/wallet_registry.compact /tmp/wallet-registry-compile
+compact compile circuits/wallet_registry.compact /tmp/wallet-registry-compile  # NB: no --no-communications-commitment (ContractCall::public_inputs always pushes comm_com)
 compact compile --no-communications-commitment deps/midnight-ledger/zswap/zswap-split.compact /tmp/zswap-split-compile
 ```
 
