@@ -77,8 +77,13 @@ export circuit wallet_attest(
   });
 
   // 3. Blind `C_sk` once more with a per-registration `salt`. The leaf is the
-  //    only value disclosed; without `salt` an observer cannot link two
-  //    registrations of the same `C_sk` (e.g. a wallet rotating its leaf).
+  //    only value disclosed. In principle a fresh independent `salt` would let
+  //    a wallet register multiple unlinkable leaves for the same `C_sk`
+  //    (unlinkable leaf rotation). NOTE: the PoC derives `(r, salt)`
+  //    deterministically from `sk` (see `derive_blinding_pair` in
+  //    local_poc_client), so a given wallet always produces the SAME `reg_leaf`
+  //    — re-registration is idempotent and leaf rotation is NOT available until
+  //    a production wiring derives `salt` from independent entropy.
   regLeaf = disclose(transientHash<RegLeafPreimage>(RegLeafPreimage {
     sep: "midnight:wallet-reg[v1]" as Field,
     commitmentSk: commitmentSk,

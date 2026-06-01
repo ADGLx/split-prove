@@ -2,9 +2,14 @@
 //
 // Replaces the v3 design (which disclosed `pk` and `C_sk` on every split spend,
 // trivially linking all spends from a single wallet) with a Merkle-membership
-// proof against the wallet registry contract. The wallet stays in the
-// anonymity set of all wallets that have ever been registered against any
-// historic root of the registry tree.
+// proof against the wallet registry contract. Ledger admission accepts a bundle
+// whose root is any root the contract has ever held — membership in the
+// contract's historic-roots set, the same test the in-circuit
+// `HistoricMerkleTree.checkRoot` performs (see `validate_split_registry_roots`
+// /`split_registry_root_history` in ledger/src/verify.rs). A proof built against
+// root R therefore stays valid even after later `register` calls advance the
+// current root past R. The wallet stays in the anonymity set of all wallets ever
+// registered against the root it proves against.
 //
 // Per-spend witnesses (all private):
 //   * sk           — 32-byte coin secret key
@@ -13,8 +18,9 @@
 //   * pk           — canonical Zswap public key (constrained against `sk` via
 //                    the standard SHA-256 gadget; never disclosed)
 //   * coin         — qualified coin info for the spend
-//   * merkle_path  — Merkle inclusion proof of `reg_leaf` against some
-//                    historical root of the registry tree
+//   * merkle_path  — Merkle inclusion proof of `reg_leaf` against a root of
+//                    the registry tree (admission requires that root to be one
+//                    the contract has held — a member of its historic-roots set)
 //
 // Public outputs:
 //   * nullifier      — canonical Zswap nullifier
@@ -23,8 +29,8 @@
 //                      (binds this client proof and the server's spend-split
 //                       proof to the same `(coin, pk)`)
 //   * registryRoot   — root of the registry tree the membership path resolves
-//                      to. The admission verifier checks that this root is in
-//                      the registry contract's historical root set.
+//                      to. The admission verifier checks that this root is a
+//                      member of the registry contract's historic-roots set.
 //
 // Soundness chain (the four checks that together replace the v3
 // attestation/per-spend cross-checks):
@@ -33,7 +39,9 @@
 //      per `(C_sk, r)`).
 //   2. `reg_leaf = transientHash(sep_reg, C_sk, salt)` (Poseidon binding).
 //   3. `merkleTreePathRootNoLeafHash(path) == upgradeFromTransient(reg_leaf)`'s
-//      historical root → this `reg_leaf` was registered at some point.
+//      root → this `reg_leaf` is registered as of that root (admission
+//      additionally requires that root to be a member of the contract's
+//      historic-roots set).
 //   4. `nullifier = persistentHash(sep_cn, coin, true, sk)` and
 //      `coinBindingTag = transientHash(sep_split_coin, coin, pk)` use the same
 //      `sk` and `pk` bit witnesses that bound `C_sk` and `pk = H(sk)`.
@@ -146,7 +154,7 @@ export circuit sk_prove(
 
   // 5. Tie the computed `regLeaf` to the supplied Merkle path's leaf, then
   //    compute and disclose the resulting root. The admission verifier checks
-  //    this root against the registry contract's HistoricMerkleTree roots set.
+  //    this root is a member of the registry contract's historic-roots set.
   assert(upgradeFromTransient(regLeaf) == merkle_path.leaf,
     "merkle path must be for the computed reg_leaf");
   registryRoot = disclose(merkleTreePathRootNoLeafHash<20>(merkle_path));
