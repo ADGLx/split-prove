@@ -7,7 +7,8 @@ the heavy spend relation from non-secret handoff data; a patched node verifies e
 admits the split spend.
 
 They differ in **how the wallet's identity is exposed on-chain**, which is the privacy crux of
-the design. Each lives on its own branch:
+the design. Each lives on its own branch. A third approach — a recursive wrapper — was also built
+and then abandoned; it's covered at the end.
 
 | | **Direct bundle** (`direct-split-bundle`) | **Registry bundle** (`registry-split-bundle`) |
 |---|---|---|
@@ -78,3 +79,40 @@ registrations advance the current root past `R`.
 - **Timing-tag privacy remains open**: the wallet still emits the *current* root, so spends are
   bucketable by which root they anchored to until wallets converge on a shared checkpoint root.
 - Heavier per-spend client proof (registry Merkle path) and more local state to manage.
+
+---
+
+## Recursive wrapper — explored and abandoned
+
+Before the registry bundle, a third approach was built and measured on the
+`recursive-privacy-wrapper` branch. It targeted the same leak as the registry — getting `pk`/`C_sk`
+off the wire — but via recursion instead of an anonymity set.
+
+The idea: keep the cheap per-spend `π_sk` on the wallet, and have the **proof server**, after
+proving `π_spend`, prove one more **wrapper proof `π_wrap`** that *recursively verifies*
+`π_attest + π_sk + π_spend` and exposes **only the normal spend fields** (nullifier, Merkle root,
+value commitment). `pk`, `C_sk`, `coinBindingTag`, and `coinCommitment` all become private wrapper
+witnesses. The chain then sees a transaction shaped like an ordinary zswap spend — the strongest
+privacy of the three, with no on-chain contract and no registration step.
+
+**It worked.** Recursion is a first-class primitive on Midnight (`midnight-circuits` ships an
+in-circuit `VerifierGadget`), and a real split spend finalized on-chain using the wrapper. It was
+**abandoned for cost and compatibility, not because it failed**:
+
+- **Proving cost is prohibitive.** Measured server-side recursive proving was **~192,755 ms
+  (~3.2 min) per spend**, versus **818 ms** for the local wallet proof — a **~235× ratio**. That
+  per-spend latency is the dealbreaker for production use.
+- **It forces a chain-wide proof-format migration.** Midnight's `VerifierGadget` uses a **Poseidon
+  Fiat-Shamir transcript**, while stock proofs use a Blake2b transcript. The first attempt —
+  wrapping the existing Blake2b-transcript proofs directly — *did* fail: the in-circuit accumulator
+  didn't match the off-circuit Blake2b accumulator. The fix was to **regenerate every inner proof
+  with the Poseidon transcript**, which makes the whole stack incompatible with stock Blake2b
+  proof bytes and would require a coordinated migration across ledger/prover/node/indexer.
+- **Tight artifact coupling.** Changing any inner circuit (attestation, client, spend, or the
+  wrapper relation) forces regenerating all coupled verifier artifacts.
+
+So recursion is the only approach that makes a split spend *byte-indistinguishable* from a normal
+spend — but that property costs ~235× the client proving time and a non-stock, Poseidon-transcript
+proof stack. The registry bundle is the pivot away from this wall: it removes the same linkage
+values from the wire at a fraction of the proving cost, trading recursion's perfect indistinguishability
+for an anonymity-set membership model.
