@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as ledger from '@midnight-ntwrk/ledger-v8';
@@ -13,7 +14,7 @@ import {
   registerNightForDust,
   closeWallet,
 } from './wallet.js';
-import { type Config } from './config.js';
+import { type Config, currentDir } from './config.js';
 
 const NIGHT_AMOUNT = 50_000n * 10n ** 6n; // 50,000 NIGHT in smallest unit
 const MAX_ACCOUNTS = 10;
@@ -367,6 +368,40 @@ async function transferShieldedNightWithRetry(
   });
 }
 
+/**
+ * Register the split-prove wallet's reg_leaf on-chain by shelling out to
+ * `make register-wallet` at the repo root (builds + runs the
+ * `local-poc-register-wallet` binary with `.env` sourced). The registry lives in
+ * on-chain state, so registration must be redone on every fresh chain — i.e.
+ * after each `make local-nodes` — exactly like funding. Folding it into the
+ * "Prepare split-prove e2e funding" step keeps the e2e prerequisites in one
+ * place. The binary is idempotent (re-running prints `already_registered`).
+ *
+ * Set MIDNIGHT_SPLIT_PROVE_SKIP_REGISTER=1 to skip (e.g. to fund without the
+ * cargo build / on-chain register tx).
+ */
+async function registerSplitProveWallet(): Promise<void> {
+  // currentDir = deps/midnight-local-dev/src → repo root is three levels up.
+  const repoRoot = path.resolve(currentDir, '..', '..', '..');
+  logger.info('Registering split-prove wallet on-chain (`make register-wallet`)...');
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn('make', ['register-wallet'], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: process.env,
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        reject(new Error(`make register-wallet exited with code ${code}`));
+      }
+    });
+  });
+  logger.info('Split-prove wallet registration complete.');
+}
+
 export async function fundSplitProveE2ESetup(
   masterWallet: WalletContext,
   config: Config,
@@ -379,7 +414,7 @@ export async function fundSplitProveE2ESetup(
     SPLIT_PROVE_DEFAULT_SHIELDED_AMOUNT,
   );
 
-  logger.info('Preparing split-prove e2e local funding...');
+  logger.info('Preparing split-prove e2e: funding config accounts + shielded coin, then on-chain registration...');
   logger.info(`Accounts file: ${accountsFile}`);
   logger.info(`Split-prove shielded address: ${shieldedAddressInput}`);
   logger.info(`Split-prove shielded amount: ${formatNightAmount(shieldedAmount)}`);
@@ -409,6 +444,18 @@ export async function fundSplitProveE2ESetup(
     nightBalance: shieldedAmount,
     dustBalance: 0n,
   });
+
+  if (process.env.MIDNIGHT_SPLIT_PROVE_SKIP_REGISTER === '1') {
+    logger.info('Skipping on-chain registration (MIDNIGHT_SPLIT_PROVE_SKIP_REGISTER=1).');
+    logger.info('Run `make register-wallet` before `make e2e`.');
+  } else {
+    try {
+      await registerSplitProveWallet();
+    } catch (e) {
+      logger.error(`Wallet registration failed: ${e instanceof Error ? e.message : e}`);
+      logger.error('Run `make register-wallet` manually before `make e2e`.');
+    }
+  }
 
   logger.info('Split-prove e2e local funding complete.');
   return funded;

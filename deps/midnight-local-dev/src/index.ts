@@ -36,7 +36,7 @@ Choose an option:
   [3] Display wallets
   [4] Exit
   [5] Fund shielded addresses directly (shielded NIGHT transfer)
-  [6] Prepare split-prove e2e funding
+  [6] Prepare split-prove e2e (fund config accounts + shielded coin, then register reg_leaf on-chain via 'make register-wallet')
 > `;
 
 function displayFundedAccounts(fundedAccounts: FundedAccount[], logger: Logger): void {
