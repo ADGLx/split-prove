@@ -3,7 +3,7 @@ LOCAL_DEV_DIR ?= deps/midnight-local-dev
 DEFAULT_MIDNIGHT_NODE_IMAGE ?= midnight-node:split-prove
 DEFAULT_MIDNIGHT_INDEXER_IMAGE ?= split-prove/indexer-standalone:local
 LEDGER_WASM_BUILDER_IMAGE ?= split-prove/ledger-wasm-builder:local
-LEDGER_WASM_OUT_DIR ?= /private/tmp/split-prove-ledger-wasm-out
+LEDGER_WASM_OUT_DIR ?= /tmp/split-prove-ledger-wasm-out
 LEDGER_WASM_ARTIFACT ?= $(LEDGER_WASM_OUT_DIR)/midnight_ledger_wasm.wasm
 
 NATIVE_DATA_DIR  ?= .native-data
@@ -11,7 +11,7 @@ NODE_BIN         ?= deps/midnight-node/target/release/midnight-node
 INDEXER_BIN      ?= deps/midnight-indexer/target/release/indexer-standalone
 INDEXER_CONFIG   ?= $(CURDIR)/deps/midnight-indexer/indexer-standalone/config.yaml
 
-.PHONY: e2e rebuild-images local-ledger-js local-nodes \
+.PHONY: e2e rebuild-images local-install local-ledger-js local-nodes \
         build-native build-node build-indexer build-register-wallet regen-genesis \
         native-node native-indexer native-proof-server native-fund native-clean \
         register-wallet
@@ -37,6 +37,13 @@ rebuild-images:
 	docker build -f Dockerfile.indexer \
 	    -t "$${MIDNIGHT_INDEXER_IMAGE:-$(DEFAULT_MIDNIGHT_INDEXER_IMAGE)}" .
 
+# One-time install of the vendored local-dev network's npm dependencies.
+# Referenced by the README / runbook setup steps. `make local-nodes` also runs
+# `npm install` after (re)generating the ledger-v8 wasm package it depends on,
+# so this target is just the explicit "install once" entry point.
+local-install:
+	cd "$(LOCAL_DEV_DIR)" && npm install
+
 local-ledger-js:
 	docker build -f deps/midnight-ledger/ledger-wasm/Dockerfile.local-builder \
 	    -t "$(LEDGER_WASM_BUILDER_IMAGE)" deps/midnight-ledger/ledger-wasm
@@ -49,8 +56,8 @@ local-ledger-js:
 	    -v split-prove-ledger-wasm-target:/target \
 	    -w /work/deps/midnight-ledger \
 	    "$(LEDGER_WASM_BUILDER_IMAGE)" \
-	    sh -c 'cargo build --package midnight-ledger-wasm --target wasm32-unknown-unknown --profile wasm --target-dir /target && cp /target/wasm32-unknown-unknown/wasm/midnight_ledger_wasm.wasm /out/midnight_ledger_wasm.wasm'
-	cd deps/midnight-ledger/ledger-wasm && node build-local-ledger-v8.mjs "$(LEDGER_WASM_ARTIFACT)"
+	    sh -c 'cargo build --package midnight-ledger-wasm --target wasm32-unknown-unknown --profile wasm --target-dir /target && cp /target/wasm32-unknown-unknown/wasm/midnight_ledger_wasm.wasm /out/midnight_ledger_wasm.wasm && rm -rf /out/pkg && wasm-bindgen /out/midnight_ledger_wasm.wasm --out-dir /out/pkg --target bundler --omit-default-module-path --weak-refs --reference-types --no-typescript'
+	cd deps/midnight-ledger/ledger-wasm && node build-local-ledger-v8.mjs "$(LEDGER_WASM_ARTIFACT)" "$(LEDGER_WASM_OUT_DIR)/pkg"
 	cd "$(LOCAL_DEV_DIR)" && npm install
 
 local-nodes: local-ledger-js
