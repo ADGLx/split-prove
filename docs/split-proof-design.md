@@ -2,6 +2,54 @@
 
 Split-Prove divides a zswap spend into wallet-local proof work and server proof work. The server can prove the expensive spend circuit without receiving the wallet's raw zswap secret key.
 
+## Overview
+
+```mermaid
+flowchart LR
+    subgraph LOCAL["Local wallet / client"]
+        W["sk, r"]
+        C["coin + Merkle witness"]
+        A["π_attest<br/>public: pk, C_sk"]
+        S["π_sk<br/>public: pk, C_sk,<br/>nullifier, coinBindingTag"]
+        H["split handoff<br/>coin metadata, pk,<br/>coinCommitment, nullifier,<br/>coinBindingTag, π_attest, π_sk"]
+
+        W --> A
+        W --> S
+        C --> S
+        A --> S
+        A --> H
+        S --> H
+        C --> H
+    end
+
+    subgraph SERVER["Proof server"]
+        P["π_spend<br/>public: pk, coinCommitment,<br/>nullifier, coinBindingTag"]
+    end
+
+    subgraph NODE["Node"]
+        V["Verify π_attest, π_sk, π_spend"]
+        M["Match shared public inputs"]
+        D{"Accept?"}
+        OK["Admit"]
+        NO["Reject"]
+
+        V --> M --> D
+        D -- yes --> OK
+        D -- no --> NO
+    end
+
+    H -- "public handoff, no sk/r" --> P
+    P -- "split proof bundle<br/>(π_attest, π_sk, π_spend, shared inputs)" --> V
+```
+
+Three proofs sit in the bundle:
+
+- **`π_attest`** (once, at wallet setup) — proves the wallet knows `sk`, that `pk = H(sk)`, and that `C_sk` commits to the same `sk` with wallet-only randomness `r`.
+- **`π_sk`** (per spend) — proves the wallet knows the same `sk` committed in `C_sk`, that the canonical zswap nullifier was derived from that `sk` and the coin, and that the coin-binding tag was derived from the coin and `pk`.
+- **`π_spend`** (per spend, server) — proves the coin commitment was built from the coin and `pk` and matches the Merkle path leaf, that the declared nullifier is inserted, that the value commitment and spend rules are valid, and re-discloses the same `coinBindingTag`.
+
+The key optimization: the costly `pk = H(sk)` relation runs **once** in the attestation, not on every spend. Per-spend the wallet only opens the cheap Poseidon `C_sk` commitment and proves the canonical nullifier relation, preserving normal double-spend semantics.
+
 ## Proof Boundary
 
 ### Wallet setup

@@ -287,7 +287,11 @@ Response shape:
 
 When `"prove": true`, the endpoint requires `zswapState` or `zswapStateFile`. The older simulated single-leaf fallback is still useful for preimage-shape debugging with `"prove": false`, but it is intentionally rejected for proof-building requests.
 
-## What Is Still Missing
+## Scope And What Is Still Missing
+
+The current demo supports **user-owned shielded coins only**. Contract-owned split spends are rejected by the proof-server and SDK preimage builder.
+
+Open work toward production:
 
 - Move the PoC preview client logic into the real wallet/client integration point.
 - Replace full `zswapState` handoff with the smallest acceptable Merkle witness if that is the desired production API.
