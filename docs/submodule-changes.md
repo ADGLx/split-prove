@@ -4,7 +4,7 @@ Summary of split-prove-specific modifications to the vendored dependencies.
 
 | Component | Current rev | Baseline | Status |
 |---|---|---|---|
-| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger)) | `3b279990` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
+| [webisoftSoftware/midnight-ledger](https://github.com/webisoftSoftware/midnight-ledger/tree/feature/split-prove-ledger-8.0.2) ([local](../deps/midnight-ledger)) | `0271c2c2` | `641d18e5` (tip of `feature/split-prove-no-sk`) | Summarised below |
 | [deps/midnight-local-dev](../deps/midnight-local-dev) (vendored — no `.git`, tracked inside the parent repo) | parent `HEAD` | `7e23340` (vendoring commit) | Summarised below |
 | [ADGLx/midnight-node](https://github.com/ADGLx/midnight-node/tree/feature/split-prove-node-0.22.3) ([local](../deps/midnight-node)) | `ce17c6a4` | `71fc6804` (3 commits before the first user commit `232f14d6`; upstream tip prior to your changes is `6f0ef437 bump node 0.22.3`) | Summarised below |
 | [ADGLx/midnight-indexer](https://github.com/ADGLx/midnight-indexer/tree/feature/split-prove-indexer-4.0.1) ([local](../deps/midnight-indexer)) | `3235a61` | `c90fb85` (v4.0.1 release tag) | Summarised below |
@@ -81,6 +81,16 @@ The wallet additionally pays a one-time ~759 ms `wallet_attest` proof at registr
 
 | SHA | Subject |
 |---|---|
+| `0271c2c2` | Ignore generated split wrapper prover (keep recursive-wrapper artifact out of direct branch) |
+| `9c69d9b9` | proof-server: clarify e2e pre-submit wasm check (rename `well_formed` field to `pre_submit_wasm_check`) |
+| `7f635ebe` | tests: real 0-vs-Jubjub-q scalar fixture + verifier-level negative tests for tampered `pk` / `commitment_sk` / `attestation_proof` |
+| `9211a726` | zswap v3 split-bundle envelope with wallet-attestation admission check (3 proofs + 4 public inputs; bundle magic bumped to v3) |
+| `d9c18389` | verify split spends against canonical wallet nullifier (restore stock-vs-split nullifier collision) |
+| `3cf1f3ab` | zswap: mirror split nullifier to Poseidon in proof-server scanner |
+| `d170ad6f` | move split coin-commitment proving into the server circuit (canonical `H(coin, pk)` asserted against Merkle leaf) |
+| `b1801425` | e2e: independently verify on-chain inclusion after submit |
+| `e986f1b3` | proof-server: per-stage timing + role-separated e2e report |
+| `c00234fd` | typed split-proof envelopes for zswap inputs |
 | `3b279990` | proof-server: add partial preview split-send support (transfer amount + shielded change output) |
 | `d385990e` | Fix preview split-send recipient nonce (avoid `CommitmentAlreadyPresent`) |
 | `c07e366d` | complete live split-send e2e with tx assembly and node inclusion check (`author_submitAndWatchExtrinsic`) |

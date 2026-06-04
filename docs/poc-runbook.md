@@ -93,13 +93,15 @@ Create `.env`:
 cp .env.example .env
 ```
 
-Use the local-dev defaults from `.env.example`; the `MIDNIGHT_PREVIEW_*` prefix is historical and still targets the local undeployed network for this PoC:
+Use the local-dev defaults from `.env.example`. The `MIDNIGHT_PREVIEW_*` prefix is historical — every var targets the local undeployed network. The e2e **cannot** run against the public preview chain: that node lacks the `SPEND_SPLIT_VK` / `SIGN_SPLIT_VK` fallback in `well_formed` (ledger commit `a72735ae`) and its indexer cannot replay split-send blocks.
 
 ```dotenv
 MIDNIGHT_PREVIEW_NODE_WS=ws://127.0.0.1:9944
 MIDNIGHT_PREVIEW_INDEXER_HTTP=http://127.0.0.1:8088/api/v4/graphql
 MIDNIGHT_PREVIEW_INDEXER_WS=ws://127.0.0.1:8088/api/v4/graphql/ws
 MIDNIGHT_PREVIEW_NETWORK_ID=undeployed
+# Refuse accidental public-preview / non-patched endpoints by default.
+MIDNIGHT_ALLOW_REMOTE_PATCHED_STACK=
 
 MIDNIGHT_PREVIEW_RECOVERY_PHRASE="<local-dev funded test phrase>"
 MIDNIGHT_PREVIEW_ACCOUNT=0
@@ -108,6 +110,9 @@ MIDNIGHT_PREVIEW_ZSWAP_EVENT_LIMIT=50000
 MIDNIGHT_PREVIEW_RECIPIENT_SHIELDED_ADDRESS=<receiver shielded address>
 MIDNIGHT_PREVIEW_TRANSFER_AMOUNT=200000000
 MIDNIGHT_PREVIEW_WALLET_SUBMIT_MODE=raw-rpc
+
+# Image tag produced by `docker build -f deps/midnight-node/Dockerfile.split-prove`.
+MIDNIGHT_NODE_IMAGE=midnight-node:split-prove
 
 MIDNIGHT_PREVIEW_ZSWAP_SEED_HEX=
 ```

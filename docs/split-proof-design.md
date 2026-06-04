@@ -28,24 +28,22 @@ The client proof uses the normal zswap nullifier relation, so a stock spend and 
 
 The proof server generates `pi_spend`. It proves:
 
-- the coin commitment was built from the coin and `pk`;
+- the coin commitment was built from the coin and `pk` and matches the Merkle path leaf;
 - the coin commitment is in the Merkle tree;
 - the declared nullifier is inserted;
+- the same `coinBindingTag` the client proof emitted is re-disclosed;
 - the value commitment and spend rules are valid.
 
 The server receives public values, coin metadata, Merkle data, and proofs. It does not receive `sk` or the attestation blinding value `r`.
 
 ### Transaction submission
 
-The patched node verifies `pi_attest`, `pi_sk`, and `pi_spend`. It also checks that the shared public values match across the proofs:
+The patched node verifies `pi_attest`, `pi_sk`, and `pi_spend`. It also byte-equates the shared public values across the proofs that emit them:
 
-- `pk`;
-- `C_sk`;
-- `nullifier`;
-- `coinBindingTag`;
-- `coinCommitment`.
+- `pk` and `C_sk` across `pi_attest` and `pi_sk`;
+- `pk`, `nullifier`, and `coinBindingTag` across `pi_sk` and `pi_spend`.
 
-The transaction is accepted only if all proofs verify and all shared values agree.
+`coinCommitment` is now emitted only by the server proof — the server computes canonical `H(coin, pk)` and asserts it equals the Merkle path leaf — so it is not a cross-proof shared value. The transaction is accepted only if all proofs verify and all shared values agree.
 
 ## Why The Wallet Proof Is Smaller
 
@@ -63,7 +61,7 @@ Yes. The client proof derives the canonical zswap nullifier, so a stock spend an
 
 ### What prevents the server from changing `pk`, `nullifier`, or coin-binding data?
 
-The ledger verifies shared public inputs across the proofs. Tampering with `pk`, `nullifier`, `coinBindingTag`, or `C_sk` breaks verification.
+The ledger verifies shared public inputs across the proofs. Tampering with `pk`, `nullifier`, `coinBindingTag`, or `C_sk` breaks the cross-proof byte-equality check and admission fails.
 
 ### Why add a wallet attestation proof?
 
@@ -91,7 +89,7 @@ No. The current approach verifies multiple proofs directly in ledger admission l
 
 ### What is the main compatibility tradeoff?
 
-The outer zswap wire format stays mostly compatible, but nodes and indexers must run the patched verifier logic and bundled verifier keys.
+The outer zswap `Input`/`Offer` serialization is unchanged, but the opaque proof envelope was bumped to `midnight:zswap-split-proof-bundle:v3` and now carries three proofs plus four public-input fields. Nodes and indexers must be rebuilt against the patched ledger so they hold the matching verifier keys (`SPEND_SPLIT_VK`, `CLIENT_DERIVATION_VK`, `WALLET_ATTESTATION_VK`). v2 bundles fail closed against v3 nodes.
 
 ## Approaches Tried And Discarded
 
